@@ -24,6 +24,7 @@ redis>=5.0.0
 # Utils
 python-dotenv==1.2.1
 pydantic==2.12.5
+PyYAML==6.0.3
 
 # Security
 cryptography>=42.0.0
