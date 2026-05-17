@@ -1,0 +1,1281 @@
+# Русский язык
+
+# ==================== ОШИБКИ ====================
+errors:
+  banned: "🚫 Вы заблокированы в этом боте."
+
+# ==================== ГЛАВНОЕ МЕНЮ ====================
+menu:
+  welcome_full: |
+    🛒 Добро пожаловать в наш магазин!
+
+    У нас вы можете приобрести <b>Telegram Stars</b> и <b>Telegram Premium</b> дешевле чем в приложении и без верификации!
+
+    <blockquote>💰 <b>Ваш баланс:</b>
+    💵 <b>{balance_usdt}</b> USDT
+    ⭐ <b>{balance_stars}</b> звёзд
+    👑 <b>{balance_premium}</b> мес. Premium</blockquote>
+
+  main_menu_btn: "🏠 Главное меню"
+
+  buttons:
+    stars: "⭐ Звёзды"
+    premium: "👑 Premium"
+    deposit: "💳 Пополнить баланс"
+    checks: "🎟 Чеки"
+    profile: "👤 Профиль"
+    news: "📰 Новости"
+    support: "💬 Поддержка"
+    back: "◀️ Назад"
+
+# ==================== STARS ====================
+stars:
+  title: "⭐ <b>Купить Звёзды</b>"
+  description: |
+    Выберите количество звёзд для покупки.
+
+    Текущий курс: <b>1 звезда = ${rate} USDT</b>
+
+  select_amount: "Выберите количество:"
+  custom_amount: "✏️ Своё количество"
+
+  enter_amount: |
+    ✏️ <b>Введите количество звёзд</b>
+
+    Минимум: {min} ⭐
+    Максимум: {max} ⭐
+
+  invalid_amount: "❌ Неверное количество. Введите число от {min} до {max}."
+
+  confirm:
+    title: "⭐ <b>Подтверждение покупки</b>"
+    amount: "Количество"
+    price: "Стоимость"
+    recipient: "Получатель"
+    confirm_btn: "✅ Подтвердить"
+
+  enter_recipient: |
+    👤 <b>Введите получателя</b>
+
+    Отправьте @username или ID пользователя, которому хотите отправить звёзды.
+
+    Или нажмите кнопку ниже, чтобы купить себе.
+
+  recipient_me: "📲 Мне"
+  invalid_recipient: "❌ Неверный формат. Введите @username или числовой ID."
+
+  select_payment: |
+    💳 <b>Выберите способ оплаты</b>
+
+    Сумма: <b>${amount} USDT</b>
+
+  payment:
+    balance: "💰 С баланса (${balance})"
+    crypto: "🔐 Криптовалюта"
+    card: "💳 Карта"
+
+  insufficient_balance: "❌ Недостаточно средств на балансе."
+
+  processing: |
+    ⏳ <b>Обработка заказа...</b>
+
+    Пожалуйста, подождите.
+
+  success: |
+    ✅ <b>Заказ выполнен!</b>
+
+    {amount} ⭐ успешно отправлены получателю @{recipient}.
+
+  error: "❌ Ошибка при выполнении заказа. Попробуйте позже."
+
+# ==================== PREMIUM ====================
+premium:
+  title: "👑 <b>Купить Premium</b>"
+  description: |
+    Выберите срок подписки Premium.
+
+    Все преимущества Premium:
+    • Без рекламы
+    • Увеличенные лимиты
+    • Эксклюзивные стикеры
+    • И многое другое!
+
+  months:
+    one: "{n} месяц"
+    few: "{n} месяца"
+    many: "{n} месяцев"
+
+  select_period: "Выберите период:"
+
+  confirm:
+    title: "👑 <b>Подтверждение покупки</b>"
+    period: "Период"
+    price: "Стоимость"
+    recipient: "Получатель"
+    confirm_btn: "✅ Подтвердить"
+
+  enter_recipient: |
+    👤 <b>Введите получателя</b>
+
+    Отправьте @username пользователя, которому хотите подарить Premium.
+
+    Или нажмите кнопку ниже, чтобы купить себе.
+
+  recipient_me: "📲 Мне"
+
+  success: |
+    ✅ <b>Заказ выполнен!</b>
+
+    Premium на {months} мес. успешно активирован для @{recipient}.
+
+# ==================== ПРОФИЛЬ ====================
+profile:
+  title: "👤 <b>Профиль</b>"
+  username_not_set: "не указан"
+  info: |
+    👤 <b>Профиль</b>
+
+    <blockquote>🆔 ID: <b><code>{user_id}</code></b>
+    👤 Username: <b>{username}</b></blockquote>
+
+    <blockquote>💰 <b>Баланс:</b>
+    💵 <b>{balance_usdt} USDT</b>
+    ⭐ <b>{balance_stars} звёзд</b>
+    👑 <b>{balance_premium} мес. Premium</b></blockquote>
+
+    <blockquote>📊 <b>Статистика:</b>
+    💳 Пополнено: <b>{deposited} USDT</b>
+    ⭐ Куплено звёзд: <b>{stars_bought} ({stars_usdt} USDT)</b>
+    👑 Куплено Premium: <b>{premium_bought} мес. ({premium_usdt} USDT)</b></blockquote>
+
+  buttons:
+    history: "📋 История"
+    promo: "🎁 Промокод"
+    referrals: "👥 Реферальная система"
+    language: "🌐 Изменить язык"
+    back: "◀️ Назад"
+
+# ==================== ИСТОРИЯ ====================
+history:
+  title: "📋 <b>История</b>"
+  empty: "У вас пока нет записей."
+  total: "Всего записей: <b>{count}</b>"
+  page: "Страница <b>{current} из {total}</b>"
+  click_for_details: "Нажмите для подробностей:"
+
+  order:
+    title: "📦 <b>Заказ #{order_key}</b>"
+    info: "📋 Информация"
+    product: "Товар"
+    quantity: "Количество"
+    recipient: "Получатель"
+    date: "Дата"
+    payment: "💳 Оплата"
+    method: "Способ"
+    amount: "Сумма"
+    status: "📌 Статус заказа"
+    status_label: "Статус"
+    completed_at: "✅ Выполнен"
+    created_at: "Создан"
+    completed_label: "Завершён"
+    error: "Ошибка"
+    withdraw_from_balance: "Вывод с баланса"
+    type_label: "Тип"
+
+  # Типы продуктов для деталей заказа
+  product_display:
+    stars: "⭐️ Звёзды"
+    premium: "👑 Premium"
+
+  # Единицы измерения
+  units:
+    stars: "⭐"
+    months: "мес."
+    months_premium: "мес. Premium"
+
+  # Способы оплаты детальные
+  payment_display:
+    balance: "💎 С баланса"
+    cryptobot: "🤖 CryptoBot"
+    ton: "💎 TON"
+
+  payment_methods:
+    cryptobot: "CryptoBot"
+    ton: "TON"
+    balance: "С баланса"
+
+  product_types:
+    stars: "⭐ Звёзды"
+    premium: "👑 Premium"
+
+  transaction_types:
+    deposit: "Пополнение"
+    purchase: "Покупка"
+    referral: "Реф. бонус"
+    promo: "Промокод"
+    check_created: "Чек создан"
+    check_activated: "Чек активирован"
+    withdrawal: "Вывод"
+
+  statuses:
+    pending: "⏳ Ожидает"
+    processing: "🔄 Обработка"
+    completed: "✅ Выполнен"
+    failed: "❌ Ошибка"
+    cancelled: "🚫 Отменён"
+
+  errors:
+    invalid_order_id: "Ошибка: неверный ID заказа"
+    order_not_found: "Заказ не найден"
+    invalid_tx_id: "Ошибка: неверный ID"
+    tx_not_found: "Транзакция не найдена"
+
+  # Метки для деталей транзакций
+  tx_labels:
+    amount: "Сумма"
+    bonus: "Бонус"
+    payment: "Оплата"
+    method: "Способ"
+    recipient: "Получатель"
+    details: "Детали"
+    level: "Уровень"
+    percent: "Процент"
+    received: "Получено"
+    activations: "Активации"
+    max: "Макс"
+    date: "Дата"
+    promo_code: "Промокод"
+    check: "Чек"
+
+# ==================== РЕФЕРАЛЫ ====================
+referrals:
+  title: "👥 <b>Реферальная система</b>"
+  description: "Приглашайте друзей и получайте бонусы!"
+
+  main_info: |
+    👥 <b>Реферальная система</b>
+
+    💎 <b>Как это работает?</b>
+    Приглашайте пользователей и получайте процент от прибыли магазина с их покупок!
+
+    <blockquote>📊 <b>3-уровневая система:</b>
+    <b>1 уровень</b> — <b>{percent1}%</b> от ваших рефералов
+    <b>2 уровень</b> — <b>{percent2}%</b> от рефералов ваших рефералов
+    <b>3 уровень</b> — <b>{percent3}%</b> от рефералов рефералов ваших рефералов</blockquote>
+
+    <blockquote>💰 <b>Реферальный баланс:</b> <b>{balance} USDT</b>
+    📈 <b>Заработано за всё время:</b> <b>{earnings} USDT</b></blockquote>
+
+    <blockquote>🔗 <b>Ваша ссылка:</b>
+    <code>{link}</code></blockquote>
+
+  full_info: |
+    👥 <b>Реферальная система</b>
+
+    <blockquote>💎 <b>Ваши бонусы:</b>
+    <b>1 уровень</b> — <b>{percent1}%</b> от ваших рефералов
+    <b>2 уровень</b> — <b>{percent2}%</b> от рефералов ваших рефералов
+    <b>3 уровень</b> — <b>{percent3}%</b> от рефералов рефералов ваших рефералов</blockquote>
+
+    <blockquote>📊 <b>Ваши рефералы:</b> <b>{total}</b> чел.
+    1 уровень: <b>{level1}</b> чел.
+    2 уровень: <b>{level2}</b> чел.
+    3 уровень: <b>{level3}</b> чел.</blockquote>
+
+    <blockquote>💰 <b>Реферальный баланс:</b> <b>{balance} USDT</b>
+    📈 <b>Заработано за всё время:</b> <b>{earnings} USDT</b></blockquote>
+
+    <blockquote>🔗 <b>Ваша ссылка:</b>
+    <code>{link}</code></blockquote>
+
+  stats: |
+    <blockquote>📊 <b>Ваши рефералы:</b>
+    1 уровень: <b>{level1}</b> чел.
+    2 уровень: <b>{level2}</b> чел.
+    3 уровень: <b>{level3}</b> чел.</blockquote>
+
+    💰 Всего заработано: <b>{earnings} USDT</b>
+
+  your_link: "🔗 <b>Ваша ссылка:</b>"
+
+  list_info: |
+    👥 <b>Мои рефералы</b>
+
+    <blockquote>📊 <b>Всего рефералов:</b> <b>{total}</b> чел.</blockquote>
+
+    <blockquote>📈 <b>По уровням:</b>
+    1 уровень: <b>{level1}</b> чел. ({percent1}%)
+    2 уровень: <b>{level2}</b> чел. ({percent2}%)
+    3 уровень: <b>{level3}</b> чел. ({percent3}%)</blockquote>
+
+    <blockquote>💰 <b>Заработано с рефералов:</b> <b>{earnings} USDT</b></blockquote>
+
+  withdraw_success: "✅ Выведено {amount} USDT на основной баланс!"
+  withdraw_no_balance: "❌ Реферальный баланс пуст"
+
+  buttons:
+    my_referrals: "👥 Рефералы"
+    share: "📤 Поделиться ссылкой"
+    withdraw: "💸 Вывести"
+    back: "◀️ Назад"
+
+# ==================== ПРОМОКОД ====================
+promo:
+  title: "🎁 <b>Активация промокода</b>"
+  enter_code: "Введите промокод:"
+  invalid: "❌ Некорректный промокод.\n\nПопробуйте ещё раз:"
+  not_found: "❌ Промокод <code>{code}</code> не найден.\n\nПопробуйте ещё раз:"
+  not_active: "❌ Промокод <code>{code}</code> неактивен.\n\nВведите другой промокод:"
+  expired: "❌ Срок действия промокода <code>{code}</code> истёк.\n\nВведите другой промокод:"
+  limit_reached: "❌ Лимит использований промокода <code>{code}</code> исчерпан.\n\nВведите другой промокод:"
+  already_used: "❌ Вы уже использовали промокод <code>{code}</code>.\n\nВведите другой промокод:"
+  no_bonus: "❌ Промокод <code>{code}</code> не содержит бонуса.\n\nВведите другой промокод:"
+  success: "✅ Промокод <code>{code}</code> активирован!\n\nПолучено: <b>{bonus}</b>"
+  success_stars: "✅ Промокод <code>{code}</code> активирован!\n\n🎁 Получено: <b>{amount} ⭐ Stars</b>"
+  success_usdt: "✅ Промокод <code>{code}</code> активирован!\n\n🎁 Получено: <b>{amount} 💵 USDT</b>"
+  success_premium: "✅ Промокод <code>{code}</code> активирован!\n\n🎁 Получено: <b>{amount} 👑 мес. Premium</b>"
+
+  buttons:
+    back: "◀️ Назад"
+
+# ==================== ЯЗЫК ====================
+language:
+  title: "🌐 <b>Выбор языка</b>"
+  description: "Выберите язык интерфейса бота:"
+
+  buttons:
+    ru: "🇷🇺 Русский"
+    en: "🇬🇧 English"
+    back: "◀️ Назад"
+
+# ==================== ПОПОЛНЕНИЕ ====================
+deposit:
+  title: "💳 <b>Пополнение баланса</b>"
+  current_balance: "<blockquote>💰 Текущий баланс: <b>{balance} USDT</b></blockquote>"
+  enter_amount_prompt: "Введите сумму пополнения в USDT"
+  amount_range: ""
+  invalid_amount: "❌ Введите корректную сумму"
+  min_error: "❌ Минимальная сумма — {min} USDT"
+  max_error: "❌ Максимальная сумма — {max} USDT"
+
+  select_method: "💳 <b>Способ оплаты</b>"
+  amount_label: "<blockquote>💵 Сумма: <b>{amount} USDT</b></blockquote>"
+  select_method_prompt: "Выберите способ оплаты"
+
+  methods:
+    cryptobot: "🤖 CryptoBot (+3%)"
+    ton: "💎 TON"
+
+  creating: "💳 <b>Создание платежа...</b>"
+  to_pay: "<blockquote>💵 Сумма к оплате: <b>{amount} USDT</b>"
+  will_credit: "💰 Зачислится: <b>{amount} USDT</b></blockquote>"
+  please_wait: "⏳ Подождите..."
+
+  cryptobot_title: "💳 <b>Оплата через CryptoBot</b>"
+  cryptobot_instructions: |
+    <blockquote>Нажмите «Оплатить» и завершите оплату в CryptoBot.
+    После оплаты нажмите «Проверить оплату».</blockquote>
+  payment_time: "⏰ Время на оплату: 30 минут"
+
+  ton_title: "💎 <b>Оплата в TON</b>"
+  ton_amount: "<blockquote>💎 К оплате: <b>{amount} TON</b></blockquote>"
+  ton_rate: ""
+  ton_instructions: |
+    <blockquote>Нажмите «Оплатить в TON» и переведите указанную сумму.
+    <b>Важно:</b> комментарий к платежу будет добавлен автоматически.</blockquote>
+  ton_warning: "⚠️ <b>Не удаляйте комментарий!</b> Без него платёж не будет найден."
+  ton_getting_rate: "⏳ Получаем курс TON..."
+  ton_rate_error: "Не удалось получить курс TON.\nПопробуйте позже или выберите другой способ оплаты."
+
+  check_after_pay: "После оплаты нажмите «Проверить оплату»."
+
+  success: |
+    ✅ <b>Оплата успешна!</b>
+
+    💵 Зачислено: {amount} USDT
+    💰 Новый баланс: {balance} USDT
+
+    Спасибо за пополнение!
+
+  success_ton: |
+    ✅ <b>Оплата успешна!</b>
+
+    💎 Получено: {ton} TON
+    💵 Зачислено: {amount} USDT
+    💰 Новый баланс: {balance} USDT
+
+    Спасибо за пополнение!
+
+  error_title: "❌ <b>Ошибка</b>"
+  error_create: "Не удалось создать платёж.\nПопробуйте позже."
+  error_user: "❌ Ошибка: пользователь не найден"
+  error_not_found: "Ошибка: платёж не найден"
+  error_check: "Не удалось проверить статус платежа"
+
+  expired_title: "❌ <b>Время истекло</b>"
+  expired_text: "Платёж не был оплачен в течение 30 минут.\nСоздайте новый платёж."
+
+  cancelled_title: "❌ <b>Платёж отменён</b>"
+  cancelled_text: "Вы отменили пополнение баланса."
+
+  not_received: "Оплата ещё не получена. Оплатите и попробуйте снова."
+  already_credited: "Этот платёж уже был зачислен ранее."
+
+  buttons:
+    pay: "💳 Оплатить"
+    pay_ton: "💎 Оплатить"
+    check: "🔄 Проверить оплату"
+    cancel: "❌ Отменить"
+    back: "◀️ Назад"
+
+# ==================== ОБЩИЕ ====================
+common:
+  error: "❌ Произошла ошибка. Попробуйте позже."
+  loading: "⏳ Загрузка..."
+  cancel: "❌ Отмена"
+  confirm: "✅ Подтвердить"
+  back: "◀️ Назад"
+  to_menu: "🏠 В меню"
+  in_development: "🚧 Раздел в разработке..."
+  user_not_found: "Ошибка. Используйте /start"
+  insufficient_balance: "❌ Недостаточно средств на балансе"
+  duplicate_request: "Заказ уже обрабатывается"
+  set_username: "Установите username в настройках Telegram"
+  recipient_not_specified: "Ошибка: получатель не указан"
+
+  # Кнопки оплаты
+  buttons:
+    pay_balance: "💰 С баланса"
+    pay_cryptobot: "🤖 CryptoBot (+3%)"
+    pay_ton: "💎 TON"
+    pay: "💳 Оплатить"
+    pay_ton_full: "💎 Оплатить"
+    check_payment: "🔄 Проверить оплату"
+
+  # Платежи
+  payment_errors:
+    invoice_not_found: "Инвойс не найден"
+    invoice_check_error: "Ошибка проверки инвойса"
+    already_processed: "Этот платёж уже обработан"
+    order_exists: "Заказ уже существует"
+    user_not_found: "Пользователь не найден"
+    not_received: "Оплата ещё не поступила"
+    payment_not_found: "Платёж не найден"
+    invoice_expired: "Инвойс истёк. Создайте новый платёж."
+    payment_expired: "Время оплаты истекло. Создайте новый платёж."
+    cancelled: "Вы отменили оплату."
+    invoice_create_error: "Не удалось создать инвойс. Попробуйте позже."
+    ton_rate_error: "Не удалось получить курс TON. Попробуйте позже."
+    check_after_pay: "После оплаты нажмите «Проверить оплату»."
+
+  # Валидация
+  validation:
+    invalid_amount: "Некорректная сумма"
+    amount_range: "Сумма должна быть от {min} до {max}"
+    invalid_duration: "Некорректный срок"
+    duration_range: "Выберите 3, 6 или 12 месяцев"
+
+  # Экран подтверждения оплаты с баланса
+  balance_payment:
+    title: "💰 <b>Оплата с баланса</b>"
+    stars_info: |
+      <blockquote>👤 Получатель: <b>@{recipient}</b>
+      ⭐ Количество: <b>{amount}</b> звёзд
+      💵 Стоимость: <b>{price} USDT</b></blockquote>
+    confirm_text: "Подтвердите оплату с баланса"
+    confirm_btn: "✅ Подтвердить оплату"
+
+  # Экран оплаты CryptoBot
+  cryptobot_payment:
+    title: "🤖 <b>Оплата через CryptoBot</b>"
+    stars_info: |
+      <blockquote>👤 Получатель: <b>@{recipient}</b>
+      ⭐ Количество: <b>{amount}</b> звёзд
+      💵 Стоимость: <b>{price} USDT</b></blockquote>
+    premium_info: |
+      <blockquote>👤 Получатель: <b>@{recipient}</b>
+      👑 Период: <b>{months}</b> мес.
+      💵 Стоимость: <b>{price} USDT</b></blockquote>
+    creating: "⏳ Создаём инвойс..."
+    instructions: "📝 Нажмите «Оплатить» и оплатите в CryptoBot. После оплаты нажмите «Проверить оплату»."
+
+  # Экран оплаты TON
+  ton_payment:
+    title: "💎 <b>Оплата в TON</b>"
+    stars_info: |
+      <blockquote>👤 Получатель: <b>@{recipient}</b>
+      ⭐ Количество: <b>{amount}</b> звёзд
+      💵 Стоимость: <b>{ton_amount} TON</b> ({usdt_amount} USDT)</blockquote>
+    premium_info: |
+      <blockquote>👤 Получатель: <b>@{recipient}</b>
+      👑 Период: <b>{months}</b> мес.
+      💵 Стоимость: <b>{ton_amount} TON</b> ({usdt_amount} USDT)</blockquote>
+    getting_rate: "⏳ Получаем актуальный курс TON..."
+    instructions: "📝 Нажмите «Оплатить» и переведите TON. После оплаты нажмите «Проверить оплату»."
+    warning: "⚠️ <b>Не удаляйте комментарий</b> — без него платёж не найдётся."
+
+  # Сообщения о статусе платежа
+  payment_status:
+    expired_title: "⏱ <b>Время истекло</b>"
+    cancelled_title: "❌ <b>Платёж отменён</b>"
+    error_title: "❌ <b>Ошибка</b>"
+
+  # Полное сообщение о необходимости username
+  set_username_full: |
+    ❌ У вас не установлен username в Telegram.
+    Установите username в настройках Telegram, чтобы получать Stars/Premium.
+
+  recipient:
+    title: "👤 <b>Получатель</b>"
+    enter: "Введите username пользователя,"
+    checking: "⏳ Проверяем @{username}..."
+    invalid: "❌ Введите корректный username (минимум 3 символа)"
+    self: "👤 Купить себе"
+
+    # Ошибки валидации получателя
+    errors:
+      not_found: "<blockquote>❌ Пользователь @{username} не найден</blockquote>"
+      service_unavailable: "<blockquote>❌ Сервис временно недоступен. Попробуйте позже</blockquote>"
+      cannot_receive_stars: "<blockquote>❌ Пользователь @{username} не может получить Stars</blockquote>"
+      unavailable_stars: "<blockquote>❌ Пользователь @{username} недоступен для получения Stars</blockquote>"
+      cannot_receive_premium: "<blockquote>❌ Пользователь @{username} не может получить Premium</blockquote>"
+      unavailable_premium: "<blockquote>❌ Пользователь @{username} недоступен для получения Premium</blockquote>"
+      already_has_premium: "<blockquote>❌ У пользователя @{username} уже есть активная подписка Premium</blockquote>"
+      rate_limit: "<blockquote>❌ Слишком много запросов. Подождите минуту</blockquote>"
+      timeout: "<blockquote>❌ Сервис не отвечает. Попробуйте позже</blockquote>"
+      unknown: "<blockquote>❌ Неизвестная ошибка. Попробуйте позже</blockquote>"
+      validation_error: "<blockquote>❌ Ошибка проверки. Попробуйте позже</blockquote>"
+
+  amount:
+    title: "🔢 <b>Количество</b>"
+    enter_number: "❌ Введите число"
+    min_error: "❌ Минимальное количество — {min}"
+    max_error: "❌ Максимальное количество — {max}"
+
+  payment:
+    title: "💳 <b>Способ оплаты</b>"
+    select: "🔍 Выберите способ оплаты"
+    balance: "💰 С баланса"
+    usdt: "💵 USDT"
+    ton: "💎 TON"
+
+  confirmation:
+    title: "✅ <b>Подтверждение</b>"
+    confirm_btn: "✅ Подтвердить"
+
+  units:
+    stars: "⭐"
+    usdt: "USDT"
+    months: "мес."
+    stars_word: "звёзд"
+
+  # Статусы заказов
+  order:
+    created_title: "⏳ <b>Заказ #{order_key} создан</b>"
+    processing: "Обрабатывается..."
+    completed_title: "✅ <b>Заказ #{order_key} выполнен!</b>"
+    error_title: "❌ <b>Ошибка заказа #{order_key}</b>"
+    recipient: "👤 Получатель: <b>@{username}</b>"
+    quantity_stars: "⭐ Количество: <b>{amount} звёзд</b>"
+    quantity_premium: "👑 Срок: <b>{months} мес.</b>"
+    price: "💵 Стоимость: <b>{price} USDT</b>"
+    stars_success: "Звёзды успешно отправлены!"
+    premium_success: "Premium успешно активирован!"
+    generic_success: "Заказ успешно обработан!"
+    error_reason: "<b>Причина:</b> {reason}"
+    error_refund: "💰 Средства возвращены на баланс."
+
+    # Сообщения об ошибках
+    errors:
+      recipient_not_found: "Получатель не найден. Проверьте username."
+      insufficient_funds: "Недостаточно средств на сервисном кошельке. Попробуйте позже."
+      session_expired: "Сервис временно недоступен. Попробуйте позже."
+      timeout: "Превышено время ожидания. Попробуйте позже."
+      rate_limit: "Слишком много запросов. Попробуйте через минуту."
+      internal_error: "Внутренняя ошибка сервиса. Обратитесь в поддержку."
+      generic: "Произошла ошибка при обработке. Обратитесь в поддержку."
+
+# ==================== РАЗДЕЛ ЗВЁЗД ====================
+stars_section:
+  menu:
+    title: "⭐ <b>Telegram Stars</b>"
+    description: "Здесь вы можете купить звёзды или получить их со своего баланса в боте."
+    balance: |
+      <blockquote>💰 <b>Ваш баланс:</b>
+      💵 <b>{balance_usdt}</b> USDT
+      ⭐ <b>{balance_stars}</b> звёзд</blockquote>
+    buy_btn: "💳 Купить звёзды"
+    withdraw_btn: "📤 Получить звёзды с баланса"
+
+  recipient:
+    enter: "🔍 Введите @username пользователя, которому хотите подарить звёзды."
+
+  amount:
+    recipient_info: "<blockquote>👤 Получатель: <b>@{username}</b></blockquote>"
+    info: |
+      <blockquote>⭐ Минимум: <b>{min}</b> ({min_price} USDT)
+      ⭐ Максимум: <b>{max}</b> ({max_price} USDT)
+
+      💰 Ваш баланс: <b>{balance} USDT</b> (<b>{afford}</b> звёзд)</blockquote>
+
+    withdraw_info: |
+      <blockquote>⭐ Минимум: <b>{min}</b> звёзд
+      ⭐ Максимум: <b>{max}</b> звёзд
+
+      💰 Ваш баланс: <b>{available}</b> звёзд</blockquote>
+
+    select: "🔍 Выберите количество или введите своё"
+    use_all_balance: "💫 На весь баланс ({amount})"
+    available: "Доступно на балансе — {amount} звёзд"
+    insufficient: "❌ Недостаточно звёзд. Минимум {min} ⭐"
+    insufficient_balance: "❌ Недостаточно звёзд. Доступно: {amount}"
+
+  payment:
+    info: |
+      <blockquote>👤 Получатель: <b>@{username}</b>
+      ⭐ Количество: <b>{amount}</b> звёзд
+      💵 Стоимость: <b>{price} USDT</b></blockquote>
+
+    withdraw_info: |
+      <blockquote>👤 Получатель: <b>@{username}</b>
+      ⭐ Количество: <b>{amount}</b> звёзд</blockquote>
+
+  confirm:
+    send: "Подтвердите отправку звёзд"
+
+  success: |
+    ✅ <b>Успешно!</b>
+
+    ⭐ {amount} звёзд отправлено пользователю @{recipient}
+
+    🚧 Интеграция с Fragment API в разработке.
+    Звёзды списаны с баланса.
+
+# ==================== РАЗДЕЛ PREMIUM ====================
+premium_section:
+  menu:
+    title: "👑 <b>Telegram Premium</b>"
+    description: "Здесь вы можете купить Premium или получить его со своего баланса в боте."
+    balance: |
+      <blockquote>💰 <b>Ваш баланс:</b>
+      💵 <b>{balance_usdt}</b> USDT
+      👑 <b>{balance_premium}</b> мес. Premium</blockquote>
+    buy_btn: "💳 Купить Premium"
+    withdraw_btn: "📤 Получить Premium с баланса"
+
+  recipient:
+    enter: "🔍 Введите @username пользователя, которому хотите подарить Premium."
+
+  duration:
+    title: "📅 <b>Срок подписки</b>"
+    recipient_info: "<blockquote>👤 Получатель: <b>@{username}</b></blockquote>"
+    buy_info: |
+      <blockquote>👑 3 месяца — <b>{price_3} USDT</b>
+      👑 6 месяцев — <b>{price_6} USDT</b>
+      👑 12 месяцев — <b>{price_12} USDT</b>
+
+      💰 Ваш баланс: <b>{balance} USDT</b> (<b>{affordable_months}</b> мес. Premium)</blockquote>
+    withdraw_info: |
+      <blockquote>💰 Ваш баланс: <b>{available}</b> мес. Premium</blockquote>
+    select: "🔍 Выберите срок подписки"
+    available: "Доступно на балансе: {months} мес."
+    insufficient: "❌ Недостаточно Premium на балансе. Минимум 3 мес."
+    insufficient_balance: "❌ Недостаточно Premium. Доступно: {months} мес."
+    months_3: "3 месяца"
+    months_6: "6 месяцев"
+    months_12: "12 месяцев"
+
+  payment:
+    info: |
+      <blockquote>👤 Получатель: <b>@{username}</b>
+      👑 Срок: <b>{months}</b> мес.
+      💵 Стоимость: <b>{price} USDT</b></blockquote>
+    withdraw_info: |
+      <blockquote>👤 Получатель: <b>@{username}</b>
+      👑 Срок: <b>{months}</b> мес.</blockquote>
+    recipient: "👤 Получатель: @{username}"
+    duration: "📅 Срок: {months} мес."
+    price: "💵 Стоимость: {price} USDT"
+
+  confirm:
+    send: "Подтвердите отправку Premium"
+
+  success: |
+    ✅ <b>Успешно!</b>
+
+    👑 {months} мес. Premium отправлено пользователю @{recipient}
+
+    🚧 Интеграция с Fragment API в разработке.
+    Premium списан с баланса.
+
+# ==================== РАЗДЕЛ ЧЕКОВ ====================
+checks:
+  title: "🎟 <b>Чеки</b>"
+  description: |
+    Создавайте чеки со звёздами или Premium и делитесь ими!
+
+    <blockquote>💰 <b>Ваш баланс:</b>
+    💵 <b>{balance_usdt} USDT</b>
+    ⭐ <b>{balance_stars} звёзд</b>
+    👑 <b>{balance_premium} мес. Premium</b></blockquote>
+
+  menu:
+    create_btn: "➕ Создать чек"
+    my_checks_btn: "📋 Активные чеки"
+    history_btn: "📜 История"
+
+  content:
+    title: "🎁 <b>Содержимое чека</b>"
+    description: |
+      <blockquote><b>⭐ Звёзды</b> — Чек на звёзды
+      <b>👑 Premium</b> — Чек на Premium</blockquote>
+
+      Выберите что будет в чеке.
+    stars_btn: "⭐ Звёзды"
+    stars_desc: "Чек на звёзды"
+    premium_btn: "👑 Premium"
+    premium_desc: "Чек на Premium"
+
+  type:
+    title: "🎟 <b>Тип чека</b>"
+    description: |
+      <blockquote><b>1️⃣ Одноразовый</b> — Можно активировать один раз
+      <b>🔄 Мульти-чек</b> — Можно активировать несколько раз</blockquote>
+
+      Выберите тип чека.
+    single_btn: "1️⃣ Одноразовый"
+    single_desc: "Можно активировать один раз"
+    multi_btn: "🔄 Мульти-чек"
+    multi_desc: "Можно активировать несколько раз"
+
+  premium_duration:
+    title: "👑 <b>Срок Premium</b>"
+    description: |
+      <blockquote><b>3 месяца</b> — Premium на 3 мес.
+      <b>6 месяцев</b> — Premium на 6 мес.
+      <b>12 месяцев</b> — Premium на 12 мес.</blockquote>
+
+      Выберите срок подписки.
+    select: "Выберите срок подписки Premium:"
+    months: "{months} мес."
+    months_3: "3 месяца"
+    months_6: "6 месяцев"
+    months_12: "12 месяцев"
+
+  amount:
+    title: "💰 <b>Сумма чека</b>"
+    description: |
+      <blockquote><b>Минимум:</b> {min} ⭐
+      <b>Максимум:</b> {max} ⭐</blockquote>
+
+      Введите количество звёзд.
+    description_multi: |
+      <blockquote><b>Минимум:</b> {min} ⭐
+      <b>Максимум:</b> {max} ⭐</blockquote>
+
+      Введите количество звёзд на одну активацию.
+    enter: "Введите количество звёзд для чека:"
+    enter_multi: "Введите количество звёзд на одну активацию:"
+    min: "Минимум: {min} ⭐"
+    max: "Максимум: {max} ⭐"
+    invalid: "❌ Введите корректное число от {min} до {max}"
+    insufficient: "❌ Недостаточно звёзд на балансе. Доступно: {balance} ⭐"
+    insufficient_premium: "❌ Недостаточно Premium на балансе. Доступно: {balance} мес."
+
+  activations:
+    title: "🔢 <b>Количество активаций</b>"
+    description: |
+      Введите количество активаций чека.
+    balance_info_stars: |
+      <blockquote>💰 <b>Ваш баланс:</b>
+      💵 <b>{usdt_balance}</b> USDT (до <b>{usdt_acts}</b> активаций)
+      ⭐ <b>{stars_balance}</b> звёзд (до <b>{stars_acts}</b> активаций)</blockquote>
+    balance_info_premium: |
+      <blockquote>💰 <b>Ваш баланс:</b>
+      💵 <b>{usdt_balance}</b> USDT (до <b>{usdt_acts}</b> активаций)
+      👑 <b>{premium_balance}</b> мес. Premium (до <b>{premium_acts}</b> активаций)</blockquote>
+    enter: "Введите количество активаций:"
+    min: "Минимум: {min}"
+    invalid_min: "❌ Минимальное количество активаций: {min}"
+    total_cost: "💰 Общая стоимость: {total} ⭐"
+    total_cost_premium: "💰 Всего: {count} активаций по {months} мес."
+    max_btn: "🔢 Максимальное количество"
+    skip_btn: "⏭ Пропустить"
+    insufficient_balance: "❌ Недостаточно средств на балансе"
+
+  recipient:
+    title: "👤 <b>Получатель чека</b>"
+    description: |
+      Введите @username или Telegram ID пользователя, который сможет активировать чек.
+    skip_btn: "👥 Для всех"
+    set_username: "👤 Получатель: @{username}"
+    set_id: "👤 Получатель: ID {user_id}"
+    any: "👥 Любой пользователь"
+    invalid: "❌ Введите корректный @username или числовой Telegram ID"
+
+  password:
+    title: "🔐 <b>Пароль чека</b>"
+    description: |
+      Введите пароль для активации чека (от 4 до 32 символов).
+    skip_btn: "🔓 Без пароля"
+    set: "🔐 Пароль: установлен"
+    none: "🔓 Без пароля"
+    invalid: "❌ Пароль должен быть от 4 до 32 символов"
+
+  channel:
+    title: "📢 <b>Обязательная подписка</b>"
+    description: |
+      Пользователь сможет активировать чек только если подписан на канал.
+
+      <blockquote>⚠️ Бот должен быть администратором канала для проверки подписки.</blockquote>
+
+      Выберите канал для обязательной подписки.
+    no_channels: |
+      У вас нет каналов где бот является администратором.
+
+      Добавьте бота в канал как администратора, чтобы использовать эту функцию.
+    add_bot_btn: "➕ Добавить в канал"
+    add_bot_group_btn: "➕ Добавить в группу"
+    skip_btn: "📢 Без подписки"
+    select_channels: "Выберите каналы (нажмите для выбора/отмены):"
+    selected: "✅ {title}"
+    not_selected: "◻️ {title}"
+    confirm_btn: "✅ Подтвердить"
+    set: "📢 Подписка: {channels}"
+    set_one: "📢 Подписка: @{channel}"
+    none: "📢 Без требования подписки"
+    bot_not_admin: "❌ Бот не является администратором канала @{channel}"
+    refresh_btn: "🔄 Обновить список"
+    refreshing: "🔄 Обновляем список..."
+    limit_reached: "❌ Достигнут лимит ({limit} каналов/групп)"
+
+  payment:
+    title: "💳 <b>Способ оплаты</b>"
+    description: "Выберите способ оплаты для создания чека."
+    summary_stars: |
+      <blockquote>📋 <b>Параметры чека:</b>
+      💵 Стоимость: <b>{price_usdt} USDT</b>
+      💫 Всего: <b>{total}</b> звёзд
+      ⭐ За активацию: <b>{amount}</b> звёзд
+      🔢 Активаций: <b>{activations}</b></blockquote>
+
+      💡 Средства будут заморожены до активации чека.
+
+      Выберите способ оплаты для создания чека.
+    summary_premium: |
+      <blockquote>📋 <b>Параметры чека:</b>
+      💵 Стоимость: <b>{price_usdt} USDT</b>
+      💫 Всего: <b>{total}</b> мес. Premium
+      👑 За активацию: <b>{amount}</b> мес.
+      🔢 Активаций: <b>{activations}</b></blockquote>
+
+      💡 Средства будут заморожены до активации чека.
+
+      Выберите способ оплаты для создания чека.
+    insufficient_balance: "❌ Недостаточно средств на балансе звёзд"
+    insufficient_premium: "❌ Недостаточно месяцев Premium на балансе"
+    insufficient_usdt: "❌ Недостаточно USDT на балансе"
+    topup_title: "💳 <b>Пополнение баланса</b>"
+    topup_description: |
+      Для создания чека необходимо пополнить баланс.
+
+      ❌ Не хватает: {amount} USDT
+    frozen_note: "💡 Средства будут заморожены до активации чека."
+    usdt_balance_btn: "💵 С баланса USDT ({balance}$)"
+    stars_balance_btn: "⭐ С баланса звёзд ({balance}⭐)"
+    premium_balance_btn: "👑 С баланса Premium ({balance} мес.)"
+    topup_btn: "💳 Пополнить на {amount} USDT"
+    redirecting_topup: "💳 Перенаправление на пополнение..."
+
+  confirm:
+    title: "✅ <b>Подтверждение создания чека</b>"
+    summary_stars: |
+      <blockquote>📋 <b>Параметры чека:</b>
+      🎟 Тип: <b>{check_type}</b>
+      ⭐ Сумма: <b>{amount}</b> звёзд
+      🔢 Активаций: <b>{activations}</b>
+      {recipient_line}
+      {password_line}
+      {channel_line}</blockquote>
+
+      💸 <b>Итого к списанию: {total} ⭐</b>
+    summary_premium: |
+      <blockquote>📋 <b>Параметры чека:</b>
+      🎟 Тип: <b>{check_type}</b>
+      👑 Premium: <b>{amount}</b> мес.
+      🔢 Активаций: <b>{activations}</b>
+      {recipient_line}
+      {password_line}
+      {channel_line}</blockquote>
+
+      💸 <b>Итого к списанию: {total} мес. Premium</b>
+    type_single: "Одноразовый"
+    type_multi: "Мульти-чек"
+    content_stars: "Звёзды"
+    content_premium: "Premium"
+    create_btn: "✅ Создать чек"
+
+  success:
+    title: "✅ <b>Чек создан!</b>"
+    info_stars: |
+      🎟 Код чека: <code>{code}</code>
+
+      Ссылка для активации:
+      {link}
+
+      ⭐ Сумма: {amount} звёзд
+      🔢 Активаций: {activations}
+    info_premium: |
+      🎟 Код чека: <code>{code}</code>
+
+      Ссылка для активации:
+      {link}
+
+      👑 Premium: {amount} мес.
+      🔢 Активаций: {activations}
+
+  my_checks:
+    title: "📋 <b>Активные чеки</b>"
+    empty: "У вас нет активных чеков."
+    item: |
+      🎟 <code>{code}</code>
+      💰 {amount} ⭐ × {remaining}/{total} активаций
+    stars_item: "{amount} звёзд {activations}/{total}"
+    premium_item: "{amount} мес. {activations}/{total}"
+    already_deleted: "Чек уже удалён"
+
+  history:
+    title: "📜 <b>История чеков</b>"
+    empty: "История чеков пуста."
+
+  errors:
+    not_found: "❌ Чек не найден"
+    already_used: "❌ Вы уже активировали этот чек"
+    no_activations: "❌ Чек полностью использован"
+    wrong_recipient: "❌ Этот чек предназначен для другого пользователя"
+    wrong_password: "❌ Неверный пароль"
+    not_subscribed: "❌ Для активации подпишитесь на канал @{channel}"
+    own_check: "❌ Нельзя активировать свой чек"
+    require_premium: "❌ Этот чек только для пользователей с Telegram Premium"
+    require_new_user: "❌ Этот чек только для новых пользователей бота"
+
+  # Детали чека
+  detail:
+    title: "🎟 <b>Чек #{code}</b>"
+    status: "📌 Статус"
+    content: "🎁 Содержимое"
+    type: "🎟 Тип"
+    activations: "🔢 Активаций"
+    description: "💬 Описание"
+    recipient: "👤 Получатель"
+    password: "🔐 Пароль"
+    subscription: "📢 Подписка"
+    payment: "💳 Оплата"
+    created: "📅 Создан"
+    link: "🔗 Ссылка"
+    no_description: "Нет"
+    any_user: "Любой пользователь"
+    password_set: "Установлен"
+    password_none: "Нет"
+    channel_none: "Нет"
+    status_active: "🟢 Активен"
+    status_deleted: "🔴 Удалён"
+    status_exhausted: "🔴 Полностью использован"
+
+  # Кнопки детального просмотра
+  detail_buttons:
+    share: "📤 Поделиться чеком"
+    add_description: "📝 Добавить описание"
+    edit_description: "✏️ Изменить описание"
+    restrictions: "⚙️ Ограничения"
+    delete: "🗑 Удалить чек"
+
+  # Редактирование описания
+  edit_description:
+    title: "📝 <b>Описание чека</b>"
+    description: |
+      Это описание будет видно при отправке чека.
+
+      Введите новое описание (до {max} символов).
+    description_with_current: |
+      Это описание будет видно при отправке чека.
+
+      <blockquote>Текущее описание: {current}</blockquote>
+
+      Введите новое описание (до {max} символов).
+    too_long: "❌ Описание слишком длинное ({current}/{max})."
+    removed: "✅ Описание удалено"
+    remove_btn: "🗑 Удалить описание"
+
+  # Ограничения чека
+  restrictions:
+    title: "⚙️ <b>Ограничения чека</b>"
+    description: "Настройте, кто может активировать чек."
+    password_btn: "🔐 Пароль"
+    password_btn_set: "🔐 Пароль ✓"
+    specific_user_btn: "👤 Конкретный пользователь"
+    specific_user_btn_set: "👤 Конкретный пользователь ✓"
+    premium_only_btn: "⭐ Только для Telegram Premium"
+    premium_only_btn_on: "⭐ Только для Telegram Premium ✓"
+    new_users_btn: "🆕 Только для новых пользователей"
+    new_users_btn_on: "🆕 Только для новых пользователей ✓"
+    subscription_btn: "📢 Обязательная подписка"
+    subscription_btn_set: "📢 Обязательная подписка ✓"
+    premium_enabled: "✅ Ограничение «Только для Premium» включено"
+    premium_disabled: "❌ Ограничение «Только для Premium» выключено"
+    new_users_enabled: "✅ Ограничение «Только для новых» включено"
+    new_users_disabled: "❌ Ограничение «Только для новых» выключено"
+
+    # Пароль
+    password:
+      title: "🔐 <b>Пароль для чека</b>"
+      description: |
+        Пользователь сможет активировать чек только если правильно введёт пароль.
+
+        Введите пароль (от 4 до 32 символов).
+      invalid: "❌ Пароль должен быть от 4 до 32 символов. Попробуйте снова."
+      set_success: "✅ Пароль установлен"
+      removed: "✅ Пароль удалён"
+      remove_btn: "🗑 Убрать пароль"
+
+    # Конкретный пользователь
+    user:
+      title: "👤 <b>Конкретный пользователь</b>"
+      description: |
+        Чек сможет активировать только пользователь, которого вы укажете.
+
+        Введите @username или Telegram ID пользователя.
+      invalid: "❌ Введите корректный @username или Telegram ID пользователя."
+      set_success: "✅ Получатель установлен"
+      removed: "✅ Ограничение снято"
+      remove_btn: "🗑 Убрать получателя"
+
+    # Подписка на канал
+    subscription:
+      title: "📢 <b>Обязательная подписка</b>"
+      description: |
+        Пользователь сможет активировать чек только если подписан на канал.
+
+        <blockquote>⚠️ Бот должен быть администратором канала для проверки подписки.</blockquote>
+
+        Выберите канал для обязательной подписки.
+      no_channels: "У вас нет каналов, где бот является администратором."
+      set_success: "✅ Каналы установлены"
+      removed: "✅ Требование подписки снято"
+      remove_btn: "🗑 Убрать требование"
+      refresh_btn: "🔄 Обновить"
+
+  # Удаление чека
+  delete:
+    title: "🗑 <b>Удаление чека</b>"
+    confirm_text: "Вы уверены, что хотите удалить этот чек?"
+    warning: "⚠️ Замороженные средства будут возвращены на баланс."
+    confirm_btn: "✅ Да, удалить"
+    cancel_btn: "❌ Отмена"
+
+  # Активация чека
+  activation:
+    password_prompt: "🔐 Введите пароль для активации чека:"
+    cancelled: "❌ Активация отменена"
+    activate_btn: "✨ Активировать чек"
+    not_subscribed_yet: "Вы ещё не подписались на все каналы"
+    success: "✅ Вы получили <b>{amount}</b> (<b>{price} USDT</b>)"
+    success_premium: "✅ Вы получили <b>{months_text} Premium</b> 👑 (<b>{price} USDT</b>)"
+    errors:
+      not_found: "❌ Чек не найден."
+      inactive: "❌ Чек был деактивирован или удалён."
+      expired: "❌ Срок действия чека истёк."
+      already_activated: "❌ Вы уже активировали этот чек."
+      exhausted: "❌ Все активации чека использованы."
+      creator_not_found: "❌ Ошибка: создатель чека не найден."
+      wrong_password: "❌ Неверный пароль. Попробуйте ещё раз."
+      too_many_attempts: "⏳ Подождите {seconds} сек. перед следующей попыткой."
+      require_premium: "❌ Этот чек только для пользователей с Telegram Premium."
+      require_new_user: "❌ Этот чек только для новых пользователей бота."
+      require_subscription: "❌ Для активации подпишитесь на канал."
+      require_subscription_list: "📢 Для активации подпишитесь на каналы ниже."
+      recipient_restricted: "❌ Этот чек предназначен для другого пользователя."
+      channel_check_failed: "❌ Не удалось проверить подписку на канал. Попробуйте позже."
+      text_required: "❌ Введите пароль текстовым сообщением."
+
+  # Единицы измерения
+  units:
+    stars: "звёзд"
+    months_premium: "мес. Premium"
+
+  # Просмотр/шаринг чека
+  share:
+    multicheck_title: "🎟 <b>Чек</b>"
+    check_title: "🎟 <b>Чек</b>"
+    total_amount: "💫 Всего: <b>{amount} {unit}</b> (<b>{price} USDT</b>)"
+    per_activation: "⭐ За активацию: <b>{amount} {unit}</b> (<b>{price} USDT</b>)"
+    activations_count: "🔢 Активаций: <b>{count}</b>"
+    activated: "✅ Активировано: <b>{count}</b> (<b>{amount} {unit}</b>)"
+    remaining: "📦 Осталось: <b>{count}</b> (<b>{amount} {unit}</b>)"
+    amount: "💫 Сумма: <b>{amount} {unit}</b> (<b>{price} USDT</b>)"
+    copy_link: "Скопируйте ссылку, чтобы поделиться чеком:"
+
+  # Удаление чека
+  deleted:
+    message: "✅ Чек был удалён."
+
+  # Информация о балансе
+  balance_info:
+    title: "💰 <b>Ваш баланс позволяет создать:</b>"
+    stars_activations: "⭐ Звёзды: до {count} активаций"
+    premium_activations: "👑 Premium: до {count} активаций"
+    usdt_activations: "💵 USDT: до {count} активаций"
+
+  # Выбор срока Premium
+  premium_select:
+    selected: "👑 Premium: {months} мес."
+
+  # Формат суммы при активации
+  amount_format:
+    stars: "{amount} ⭐"
+    premium: "{months} мес. Premium 👑"
+
+# ==================== INLINE РЕЖИМ ====================
+inline:
+  # Общие элементы
+  click_to_send: "Нажмите чтобы отправить"
+  buy_btn: "💳 Купить {amount} звёзд"
+  buy_premium_btn: "💳 Купить {months} мес. Premium"
+  go_to_bot_btn: "🤖 Перейти в бота"
+
+  # Локализованные слова для сообщений
+  stars_word: "звезд"
+  star_singular: "звезда"
+  months_abbr: "мес."
+  min_label: "мин."
+  max_warning: "⚠️ <i>Максимум за 1 заказ — {max} ⭐</i>"
+
+  # Калькулятор звёзд
+  stars:
+    title: "⭐ {amount} звёзд"
+    title_with_price: "⭐ {amount} звёзд = {price}"
+    title_en: "⭐ {amount} stars"
+    price_label: "💵 Стоимость: <b>{price}</b>"
+    calc_title: "⭐ <b>Калькулятор звёзд</b>"
+    amount_label: "🔢 Количество: <b>{amount}</b> звёзд"
+
+  # Конвертер валюта -> звёзды
+  converter:
+    title: "{emoji} <b>Конвертер {currency} → Звёзды</b>"
+    amount_label: "💰 Сумма: <b>{amount}</b>"
+    stars_label: "⭐ Звёзд: <b>{stars}</b>"
+    min_error_title: "❌ На {amount} можно купить только {stars} звёзд"
+    min_error_desc: "Минимум {min} звёзд"
+
+  # Калькулятор Premium
+  premium:
+    title: "👑 {months} мес. Premium"
+    title_with_price: "👑 {months} мес. Premium = {price}"
+    calc_title: "👑 <b>Калькулятор Premium</b>"
+    period_label: "📅 Срок: <b>{months}</b> мес."
+    invalid_title: "❌ Доступные сроки: 3, 6, 12 месяцев"
+    invalid_desc: "Введите: 3p, 6p или 12p"
+
+  # Инструкция
+  instruction:
+    stars_title: "⭐ Калькулятор звёзд"
+    stars_desc: "100s, 100 stars usdt"
+    stars_message: |
+      ⭐ <b>Калькулятор звёзд</b>
+
+      <b>Форматы:</b>
+      • <code>100s</code> — стоимость во всех валютах
+      • <code>100 stars usdt</code> — в USDT
+      • <code>100s ton</code> — в TON
+      • <code>100 star rub</code> — в рублях
+
+      <i>Лимиты: {min} — {max} звёзд</i>
+    premium_title: "👑 Калькулятор Premium"
+    premium_desc: "3p, 6 prem ton"
+    premium_message: |
+      👑 <b>Калькулятор Premium</b>
+
+      <b>Форматы:</b>
+      • <code>3p</code> — 3 мес. во всех валютах
+      • <code>6 premium usdt</code> — в USDT
+      • <code>12p ton</code> — в TON
+      • <code>3 prem rub</code> — в рублях
+    convert_title: "💱 Конвертер валюта → Звёзды"
+    convert_desc: "100 usdt/ton/rub stars"
+    convert_message: |
+      💱 <b>Конвертер валюта → Звёзды</b>
+
+      Сколько звёзд можно купить за сумму:
+
+      • <code>10 usdt stars</code>
+      • <code>5 ton s</code>
+      • <code>1000 rub stars</code>
+
+      <i>Лимиты: {min} — {max} звёзд</i>
+    check_title: "🎁 Отправить чек"
+    check_desc: "ABCD1234 (код чека)"
+    check_message: |
+      🎁 <b>Отправить чек</b>
+
+      Введите код чека для отправки:
+
+      • <code>ABCD1234</code>
+
+      <i>Получатель сможет активировать чек по кнопке</i>
+
+  # Ошибки
+  errors:
+    min_stars: "❌ Минимум {min} звёзд"
+    max_stars: "❌ Максимум {max} звёзд"
+    range_desc: "Введите число от {min} до {max}"
+    invalid_title: "❓ Неизвестный формат"
+    invalid_desc: "100s, 3p, 10 usdt stars"
+    invalid_message: |
+      ❓ <b>Неизвестный формат</b>
+
+      <b>Доступные форматы:</b>
+      • <code>100s</code> — стоимость звёзд
+      • <code>100 stars ton</code> — в TON
+      • <code>3p</code> — стоимость Premium
+      • <code>10 usdt stars</code> — звёзд за валюту
+
+  # Чеки inline
+  check:
+    not_found_title: "❌ Чек не найден"
+    not_found_desc: "Чек с кодом {code} не существует"
+    inactive_title: "❌ Чек неактивен"
+    inactive_desc: "Этот чек был деактивирован или удалён"
+    exhausted_title: "❌ Чек исчерпан"
+    exhausted_desc: "Все активации этого чека использованы"
+    share_desc: "Нажмите, чтобы поделиться этим чеком"
+    for_user: " для @{username}"
+    for_id: " для ID {id}"
+    # Звёзды - одиночный чек
+    stars_title: "🎁 Чек на {amount} ⭐ ({price} USDT){recipient}"
+    stars_single_message: "🎁 <b>Чек на {amount} звёзд ({price} USDT){recipient}</b>"
+    # Звёзды - мультичек
+    stars_multi_title: "🎁 Мультичек на {amount} ⭐ ({price} USDT){recipient}"
+    stars_multi_message: |
+      🎁 <b>Мультичек на {total} звёзд ({price} USDT){recipient}</b>
+
+      Сумма одного чека: <b>{amount} звёзд ({per_price} USDT)</b>
+      Количество активаций: <b>{count}</b>
+    # Premium - одиночный чек
+    premium_title: "🎁 Чек на {months} мес. Premium ({price} USDT){recipient} 👑"
+    premium_single_message: "🎁 <b>Чек на {months} мес. Premium ({price} USDT){recipient}</b> 👑"
+    # Premium - мультичек
+    premium_multi_title: "🎁 Мультичек на {months} мес. Premium ({price} USDT){recipient} 👑"
+    premium_multi_message: |
+      🎁 <b>Мультичек на {total} мес. Premium ({price} USDT){recipient}</b> 👑
+
+      Сумма одного чека: <b>{months} мес. ({per_price} USDT)</b>
+      Количество активаций: <b>{count}</b>
+    # Кнопки
+    activate_stars_btn: "Получить {amount}⭐"
+    activate_premium_btn: "Получить {months} мес. 👑"
+
+# ==================== ПОДДЕРЖКА ====================
+support:
+  title: "🆘 <b>Поддержка</b>"
+  text: "Если у вас возникли вопросы или проблемы, свяжитесь с нашей поддержкой."
+  contact_btn: "📩 Написать в поддержку"
