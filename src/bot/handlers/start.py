@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from src.bot.legal import PRIVACY_POLICY_URL, USER_AGREEMENT_URL
 from src.bot.keyboards.menu import MenuCallback, get_main_menu_keyboard
 from src.bot.keyboards.stars import get_recipient_keyboard, StarsCallback
 from src.bot.keyboards.premium import get_premium_recipient_keyboard
@@ -116,6 +117,57 @@ def get_welcome_message(
         balance_stars=f"{balance_stars:,.0f}",
         balance_premium=balance_premium_months,
     ).strip()
+
+
+def _get_legal_notice_text(lang: str) -> str:
+    """Сформировать уведомление о принятии документов для новых пользователей."""
+    if lang == "en":
+        agreement_link = f'<a href="{USER_AGREEMENT_URL}">User Agreement</a>'
+        return (
+            "<b>Before using Eva Star</b>\n\n"
+            "By continuing to use the bot, placing orders, topping up the balance "
+            "or receiving digital goods, you confirm that you have read and accept "
+            f"the {agreement_link} and "
+            f'<a href="{PRIVACY_POLICY_URL}">Privacy Policy</a>.\n\n'
+            "If you do not agree with these terms, please stop using the bot."
+        )
+
+    agreement_link = f'<a href="{USER_AGREEMENT_URL}">Пользовательским соглашением</a>'
+    return (
+        "<b>Перед использованием Eva Star</b>\n\n"
+        "Продолжая пользоваться ботом, оформляя заказы, пополняя баланс "
+        "или получая цифровые товары, вы подтверждаете, что ознакомились "
+        f"и соглашаетесь с {agreement_link} и "
+        f'<a href="{PRIVACY_POLICY_URL}">Политикой конфиденциальности</a>.\n\n'
+        "Если вы не согласны с условиями документов, пожалуйста, не используйте бот."
+    )
+
+
+def _get_legal_notice_keyboard(lang: str) -> InlineKeyboardMarkup:
+    """Кнопки со ссылками на юридические документы."""
+    if lang == "en":
+        privacy_text = "Privacy Policy"
+        agreement_text = "User Agreement"
+    else:
+        privacy_text = "Политика конфиденциальности"
+        agreement_text = "Пользовательское соглашение"
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=agreement_text, url=USER_AGREEMENT_URL)],
+            [InlineKeyboardButton(text=privacy_text, url=PRIVACY_POLICY_URL)],
+        ]
+    )
+
+
+async def _send_legal_notice(message: Message, lang: str) -> None:
+    """Отправить юридическое уведомление новым пользователям."""
+    await message.answer(
+        text=_get_legal_notice_text(lang),
+        reply_markup=_get_legal_notice_keyboard(lang),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
 
 
 def _safe_parse_int(value: str, max_value: int = 10_000_000) -> Optional[int]:
@@ -277,6 +329,7 @@ async def _process_start(
                 language=lang,
                 referrer_code=referrer_code,
             )
+            await _send_legal_notice(message, lang)
 
         # Если есть check_code - активируем чек
         if check_code:

@@ -3,6 +3,7 @@
 """
 import asyncio
 import logging
+import os
 import sys
 import traceback
 
@@ -47,9 +48,8 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# Локальный прокси для запуска из РФ. Перед деплоем на сервер держать None.
-# Если нужно запустить локально через прокси, временно заменить на "http://127.0.0.1:10808".
-LOCAL_TELEGRAM_PROXY: str | None = None
+# Optional Telegram API proxy. Set TELEGRAM_PROXY locally if Telegram is unavailable directly.
+LOCAL_TELEGRAM_PROXY: str | None = os.getenv("TELEGRAM_PROXY")
 
 
 async def main() -> None:

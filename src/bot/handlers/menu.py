@@ -7,6 +7,7 @@ from typing import Optional
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
 
+from src.bot.legal import PRIVACY_POLICY_URL, USER_AGREEMENT_URL
 from src.bot.keyboards.menu import MenuCallback, get_back_button, get_support_keyboard
 from src.db.session import async_session_factory
 from src.locales import t, get_user_locale
@@ -91,13 +92,25 @@ async def callback_support(callback: CallbackQuery) -> None:
     bot_settings = await get_bot_settings()
     support_username = bot_settings.get("support_username") or "support"
 
-    text = f"{t('support.title', lang)}\n\n{t('support.text', lang)}"
+    if lang == "en":
+        legal_links = (
+            f'<a href="{USER_AGREEMENT_URL}">User Agreement</a>\n'
+            f'<a href="{PRIVACY_POLICY_URL}">Privacy Policy</a>'
+        )
+    else:
+        legal_links = (
+            f'<a href="{USER_AGREEMENT_URL}">Пользовательское соглашение</a>\n'
+            f'<a href="{PRIVACY_POLICY_URL}">Политика конфиденциальности</a>'
+        )
+
+    text = f"{t('support.title', lang)}\n\n{t('support.text', lang)}\n\n{legal_links}"
 
     try:
         await callback.message.edit_text(
             text=text,
             reply_markup=get_support_keyboard(support_username, lang),
             parse_mode="HTML",
+            disable_web_page_preview=True,
         )
     except Exception as e:
         logger.debug(f"Failed to edit support message: {e}")
