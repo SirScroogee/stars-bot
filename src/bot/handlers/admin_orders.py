@@ -26,7 +26,10 @@ from src.bot.keyboards.admin import (
 )
 from src.db.models import Order
 from src.db.session import async_session_factory
+from src.core.queue import get_order_queue
 from src.services.order_service import OrderService
+from src.services.user_service import UserService
+from src.workers.order_worker import get_order_worker
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +38,14 @@ router = Router(name="admin_orders")
 # Алиасы для обратной совместимости
 _check_admin = check_admin
 _to_moscow_time = to_moscow_time
+
+
+async def _enqueue_order_for_retry(order_id: int) -> None:
+    worker = get_order_worker()
+    if worker and worker.is_running:
+        await worker.enqueue_order(order_id)
+    else:
+        await get_order_queue().enqueue(order_id)
 
 
 class OrdersStates(StatesGroup):
@@ -558,7 +569,7 @@ async def callback_order_retry(callback: CallbackQuery) -> None:
             await callback.answer("Заказ не найден", show_alert=True)
             return
 
-        if order.status != "failed":
+        if order.status not in ("failed", "processing"):
             await callback.answer("Можно повторить только неудачные заказы", show_alert=True)
             return
 
@@ -593,6 +604,7 @@ async def callback_order_retry_confirm(callback: CallbackQuery) -> None:
         await session.commit()
 
         if success:
+            await _enqueue_order_for_retry(order_id)
             await callback.answer("✅ Заказ возвращён в очередь", show_alert=True)
             logger.info(f"Order {order_id} retried by admin {callback.from_user.id}")
         else:
@@ -611,7 +623,7 @@ async def callback_orders_retry_all(callback: CallbackQuery) -> None:
 
     async with async_session_factory() as session:
         order_service = OrderService(session)
-        failed_orders = await order_service.get_failed_orders()
+        failed_orders = await order_service.get_failed_orders(limit=10000)
 
     if not failed_orders:
         await callback.answer("Нет неудачных заказов", show_alert=True)
@@ -640,8 +652,16 @@ async def callback_orders_retry_all_confirm(callback: CallbackQuery, state: FSMC
 
     async with async_session_factory() as session:
         order_service = OrderService(session)
+        failed_orders = await order_service.get_failed_orders(limit=10000)
+        retry_order_ids = [
+            order.id for order in failed_orders
+            if order.payment_provider != "balance"
+        ]
         count = await order_service.retry_all_failed()
         await session.commit()
+
+    for order_id in retry_order_ids:
+        await _enqueue_order_for_retry(order_id)
 
     await callback.answer(f"✅ Повторено заказов: {count}", show_alert=True)
     logger.info(f"All failed orders retried by admin {callback.from_user.id}: {count}")

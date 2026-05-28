@@ -13,10 +13,10 @@ OrderService — управление заказами с идемпотентн
 """
 import logging
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -523,6 +523,26 @@ class OrderService:
         )
         return list(result.scalars().all())
 
+    async def get_retryable_failed_orders(
+        self,
+        older_than_seconds: int = 300,
+        limit: int = 100,
+    ) -> list[Order]:
+        """Get failed orders that are safe to retry automatically."""
+        threshold = datetime.utcnow() - timedelta(seconds=older_than_seconds)
+        result = await self._session.execute(
+            select(Order)
+            .where(
+                Order.status == OrderStatus.FAILED.value,
+                Order.payment_provider != PaymentProvider.BALANCE.value,
+                Order.updated_at <= threshold,
+                func.lower(Order.error_message).like("%insufficient funds%"),
+            )
+            .order_by(Order.updated_at)
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
     async def get_problem_orders(self, stuck_timeout_minutes: int = 10) -> list[Order]:
         """
         Получить проблемные заказы.
@@ -665,13 +685,44 @@ class OrderService:
         logger.warning(f"Order {order_id} cannot be refunded")
         return False
 
-    async def retry_order(self, order_id: int) -> bool:
+    async def retry_order(self, order_id: int, debit_balance: bool = True) -> bool:
         """
         Повторить неудачный заказ (FAILED -> PENDING).
 
         Returns:
             True если статус обновлён
         """
+        order = await self.get_order(order_id)
+        if not order:
+            logger.warning(f"Order {order_id} not found, cannot retry")
+            return False
+
+        if order.status == OrderStatus.PROCESSING.value:
+            processing_timeout = datetime.utcnow() - timedelta(minutes=10)
+            if order.updated_at and order.updated_at >= processing_timeout:
+                logger.warning(f"Order {order_id} is still PROCESSING, cannot retry before timeout")
+                return False
+            return await self.return_to_pending(order_id)
+
+        if order.status != OrderStatus.FAILED.value:
+            logger.warning(f"Order {order_id} is not FAILED or PROCESSING, cannot retry")
+            return False
+
+        if order.payment_provider == PaymentProvider.BALANCE.value:
+            if not debit_balance:
+                logger.warning(f"Balance order {order_id} requires manual retry with balance debit")
+                return False
+
+            user_result = await self._session.execute(
+                select(User).where(User.id == order.user_id).with_for_update()
+            )
+            user = user_result.scalar_one_or_none()
+            if not user or user.balance_usdt < order.price_usdt:
+                logger.warning(f"User {order.user_id} has insufficient USDT balance to retry order {order_id}")
+                return False
+
+            user.balance_usdt -= order.price_usdt
+
         result = await self._session.execute(
             update(Order)
             .where(Order.id == order_id, Order.status == OrderStatus.FAILED.value)
@@ -700,7 +751,10 @@ class OrderService:
         """
         result = await self._session.execute(
             update(Order)
-            .where(Order.status == OrderStatus.FAILED.value)
+            .where(
+                Order.status == OrderStatus.FAILED.value,
+                Order.payment_provider != PaymentProvider.BALANCE.value,
+            )
             .values(
                 status=OrderStatus.PENDING.value,
                 error_message=None,

@@ -2,6 +2,7 @@
 UserService — управление пользователями и реферальной системой.
 """
 import logging
+import re
 import secrets
 from datetime import datetime
 from decimal import Decimal
@@ -49,6 +50,56 @@ class UserService:
         alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # Без 0, O, 1, I для избежания путаницы
         return "".join(secrets.choice(alphabet) for _ in range(7))
 
+    @staticmethod
+    def is_valid_referral_code(code: str | None) -> bool:
+        """Check current referral code format."""
+        return bool(code and re.fullmatch(r"[A-Z2-9]{7}", code))
+
+    async def _generate_unique_referral_code(self) -> str:
+        new_referral_code = self.generate_referral_code()
+        while True:
+            existing = await self._session.execute(
+                select(User.id).where(User.referral_code == new_referral_code)
+            )
+            if not existing.first():
+                return new_referral_code
+            new_referral_code = self.generate_referral_code()
+
+    async def normalize_referral_code(self, user: User) -> bool:
+        """Replace legacy referral codes and preserve existing referral links in DB."""
+        if self.is_valid_referral_code(user.referral_code):
+            return False
+
+        old_code = user.referral_code
+        new_code = await self._generate_unique_referral_code()
+        user.referral_code = new_code
+        user.updated_at = datetime.utcnow()
+
+        if old_code:
+            await self._session.execute(
+                update(User)
+                .where(User.referrer_code == old_code)
+                .values(referrer_code=new_code, updated_at=datetime.utcnow())
+            )
+
+        logger.info(f"Normalized referral code for user {user.id}: {old_code} -> {new_code}")
+        return True
+
+    async def resolve_referrer_code(self, referrer_code_used: str | None) -> str | None:
+        """Resolve legacy referrer codes to the current stored referral code."""
+        if not referrer_code_used:
+            return None
+
+        if referrer_code_used.startswith("admin_"):
+            raw_user_id = referrer_code_used.removeprefix("admin_")
+            if raw_user_id.isdigit():
+                referrer = await self.get_user(int(raw_user_id))
+                if referrer:
+                    await self.normalize_referral_code(referrer)
+                    return referrer.referral_code
+
+        return referrer_code_used
+
     async def get_or_create_user(
         self,
         user_id: int,
@@ -80,10 +131,12 @@ class UserService:
                 user.username = username
                 user.updated_at = datetime.utcnow()
 
+            await self.normalize_referral_code(user)
             return user, False
 
         # Проверяем валидность реферального кода
         valid_referrer_code = None
+        referrer_code_used = await self.resolve_referrer_code(referrer_code_used)
         if referrer_code_used:
             referrer_result = await self._session.execute(
                 select(User.id).where(User.referral_code == referrer_code_used)
@@ -97,14 +150,7 @@ class UserService:
                     logger.info(f"User {user_id} registered with referrer code {referrer_code_used}")
 
         # Генерируем уникальный реферальный код
-        new_referral_code = self.generate_referral_code()
-        while True:
-            existing = await self._session.execute(
-                select(User.id).where(User.referral_code == new_referral_code)
-            )
-            if not existing.first():
-                break
-            new_referral_code = self.generate_referral_code()
+        new_referral_code = await self._generate_unique_referral_code()
 
         # Создаём пользователя
         user = User(

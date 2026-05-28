@@ -118,6 +118,9 @@ async def callback_profile(callback: CallbackQuery, state: FSMContext) -> None:
             await callback.answer(t("common.user_not_found", lang), show_alert=True)
             return
 
+        if await user_service.normalize_referral_code(db_user):
+            await session.commit()
+
         # Получаем статистику покупок
         purchase_stats = await user_service.get_purchase_stats(user.id)
 
@@ -164,6 +167,9 @@ async def callback_referrals(callback: CallbackQuery) -> None:
             return
 
         # Получаем статистику
+        if await user_service.normalize_referral_code(db_user):
+            await session.commit()
+
         ref_stats = await user_service.get_referral_stats(user.id)
 
         # Получаем динамические проценты

@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from src.bot.legal import PRIVACY_POLICY_URL, USER_AGREEMENT_URL
+from src.bot.legal import PRIVACY_POLICY_URL, USER_AGREEMENT_URL, get_legal_links_text
 from src.bot.keyboards.menu import MenuCallback, get_main_menu_keyboard
 from src.bot.keyboards.stars import get_recipient_keyboard, StarsCallback
 from src.bot.keyboards.premium import get_premium_recipient_keyboard
@@ -215,7 +215,7 @@ def parse_start_params(param: str) -> tuple[str | None, int | None, int | None, 
         return None, None, None, None
 
     # Проверяем формат ref_CODE_buy_AMOUNT (Stars с рефералкой)
-    buy_match = re.match(r"ref_([^_]+)_buy_(\d+)", param)
+    buy_match = re.match(r"ref_(.+)_buy_(\d+)$", param)
     if buy_match:
         referrer_code = buy_match.group(1)
         buy_amount = _safe_parse_int(buy_match.group(2))
@@ -224,7 +224,7 @@ def parse_start_params(param: str) -> tuple[str | None, int | None, int | None, 
         return None, None, None, None
 
     # Проверяем формат ref_CODE_premium_MONTHS (Premium с рефералкой)
-    premium_match = re.match(r"ref_([^_]+)_premium_(\d+)", param)
+    premium_match = re.match(r"ref_(.+)_premium_(\d+)$", param)
     if premium_match:
         referrer_code = premium_match.group(1)
         premium_months = _safe_parse_int(premium_match.group(2), max_value=120)
@@ -364,9 +364,10 @@ async def _process_start(
         bot_settings = await get_bot_settings()
 
         await message.answer(
-            text=welcome_text,
+            text=f"{welcome_text}\n\n{get_legal_links_text(lang)}",
             reply_markup=get_main_menu_keyboard(lang, bot_settings.get("news_channel_url")),
             parse_mode="HTML",
+            disable_web_page_preview=True,
         )
 
 

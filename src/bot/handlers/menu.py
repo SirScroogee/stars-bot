@@ -7,7 +7,7 @@ from typing import Optional
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
 
-from src.bot.legal import PRIVACY_POLICY_URL, USER_AGREEMENT_URL
+from src.bot.legal import get_legal_links_text
 from src.bot.keyboards.menu import MenuCallback, get_back_button, get_support_keyboard
 from src.db.session import async_session_factory
 from src.locales import t, get_user_locale
@@ -38,6 +38,8 @@ async def callback_referral(callback: CallbackQuery) -> None:
             return
 
         lang = db_user.language_code or get_user_locale(user.language_code)
+        if await user_service.normalize_referral_code(db_user):
+            await session.commit()
 
         # Получаем полную статистику рефералов
         ref_stats = await user_service.get_referral_stats(user.id)
@@ -92,18 +94,7 @@ async def callback_support(callback: CallbackQuery) -> None:
     bot_settings = await get_bot_settings()
     support_username = bot_settings.get("support_username") or "support"
 
-    if lang == "en":
-        legal_links = (
-            f'<a href="{USER_AGREEMENT_URL}">User Agreement</a>\n'
-            f'<a href="{PRIVACY_POLICY_URL}">Privacy Policy</a>'
-        )
-    else:
-        legal_links = (
-            f'<a href="{USER_AGREEMENT_URL}">Пользовательское соглашение</a>\n'
-            f'<a href="{PRIVACY_POLICY_URL}">Политика конфиденциальности</a>'
-        )
-
-    text = f"{t('support.title', lang)}\n\n{t('support.text', lang)}\n\n{legal_links}"
+    text = f"{t('support.title', lang)}\n\n{t('support.text', lang)}\n\n{get_legal_links_text(lang)}"
 
     try:
         await callback.message.edit_text(

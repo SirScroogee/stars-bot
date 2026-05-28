@@ -126,6 +126,8 @@ class OrderWorker:
         queue: OrderQueue | None = None,
         poll_interval: float = 0.1,  # Уменьшено для concurrent режима
         retry_delay_base: float = 5.0,
+        insufficient_funds_retry_delay: float = 300.0,
+        maintenance_interval: float = 300.0,
         fallback_config: FragmentConfig | None = None,
         max_pool_idle_time: float = 300.0,  # 5 минут
         max_concurrent_orders: int = 1,  # Параллельная обработка
@@ -146,6 +148,8 @@ class OrderWorker:
         self._queue = queue or get_order_queue()
         self._poll_interval = poll_interval
         self._retry_delay_base = retry_delay_base
+        self._insufficient_funds_retry_delay = insufficient_funds_retry_delay
+        self._maintenance_interval = maintenance_interval
         self._fallback_config = fallback_config
         self._max_pool_idle_time = max_pool_idle_time
         self._max_concurrent_orders = max_concurrent_orders
@@ -155,6 +159,7 @@ class OrderWorker:
         self._running = False
         self._task: asyncio.Task | None = None
         self._cleanup_task: asyncio.Task | None = None
+        self._maintenance_task: asyncio.Task | None = None
 
         # ===== CONCURRENT PROCESSING =====
         self._semaphore: asyncio.Semaphore | None = None
@@ -218,6 +223,7 @@ class OrderWorker:
         self._stats["started_at"] = time.time()
         self._task = asyncio.create_task(self._run_loop())
         self._cleanup_task = asyncio.create_task(self._pool_cleanup_loop())
+        self._maintenance_task = asyncio.create_task(self._maintenance_loop())
 
         logger.info(f"[{self._worker_id}] OrderWorker started")
 
@@ -264,6 +270,13 @@ class OrderWorker:
             self._cleanup_task.cancel()
             try:
                 await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+
+        if self._maintenance_task:
+            self._maintenance_task.cancel()
+            try:
+                await self._maintenance_task
             except asyncio.CancelledError:
                 pass
 
@@ -318,6 +331,28 @@ class OrderWorker:
                     logger.info(f"Closed idle client for account {account_id}")
                 except Exception as e:
                     logger.warning(f"Error closing idle client {account_id}: {e}")
+
+    async def _ack_if_redis(self, order_id: int) -> None:
+        if isinstance(self._queue, RedisQueue):
+            await self._queue.ack(order_id)
+
+    async def _maintenance_loop(self) -> None:
+        """Periodically recover stuck orders and requeue retryable failed orders."""
+        while self._running:
+            try:
+                await asyncio.sleep(self._maintenance_interval)
+                if not self._running:
+                    break
+
+                await self._recover_stuck_orders(
+                    recover_redis_processing=False,
+                    recover_pending=False,
+                )
+                await self._recover_retryable_failed_orders()
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.exception(f"Error in order maintenance loop: {e}")
 
     async def _get_fragment_account(self) -> tuple[Optional[FragmentAccountData], Optional[int]]:
         """
@@ -618,6 +653,7 @@ class OrderWorker:
 
             if order is None:
                 logger.error(f"Order {order_id} not found")
+                await self._ack_if_redis(order_id)
                 # Уменьшаем active_orders если использовали пул
                 if account_id:
                     self._update_warmth_on_order_complete(account_id, success=False)
@@ -626,24 +662,36 @@ class OrderWorker:
                 return
 
             # 2. Проверяем идемпотентность
-            if order.status == OrderStatus.COMPLETED:
+            if order.status == OrderStatus.COMPLETED.value:
                 logger.info(f"Order {order_id} already completed, skipping")
+                await self._ack_if_redis(order_id)
                 if account_id:
                     self._update_warmth_on_order_complete(account_id, success=True)
                 if not use_pool:
                     await fragment_client.close()
                 return
 
-            if order.status == OrderStatus.FAILED:
+            if order.status == OrderStatus.FAILED.value:
                 logger.info(f"Order {order_id} already failed, skipping")
+                await self._ack_if_redis(order_id)
                 if account_id:
                     self._update_warmth_on_order_complete(account_id, success=False)
                 if not use_pool:
                     await fragment_client.close()
                 return
 
-            if order.status == OrderStatus.CANCELLED:
+            if order.status == OrderStatus.CANCELLED.value:
                 logger.info(f"Order {order_id} cancelled, skipping")
+                await self._ack_if_redis(order_id)
+                if account_id:
+                    self._update_warmth_on_order_complete(account_id, success=False)
+                if not use_pool:
+                    await fragment_client.close()
+                return
+
+            if order.status == OrderStatus.REFUNDED.value:
+                logger.info(f"Order {order_id} refunded, skipping")
+                await self._ack_if_redis(order_id)
                 if account_id:
                     self._update_warmth_on_order_complete(account_id, success=False)
                 if not use_pool:
@@ -653,6 +701,7 @@ class OrderWorker:
             # 3. Устанавливаем статус PROCESSING
             if not await order_service.set_processing(order_id):
                 logger.warning(f"Order {order_id} cannot be set to PROCESSING")
+                await self._ack_if_redis(order_id)
                 if account_id:
                     self._update_warmth_on_order_complete(account_id, success=False)
                 if not use_pool:
@@ -760,6 +809,22 @@ class OrderWorker:
                     f"Order {order_id} will be retried with different account: {result.error_message}"
                 )
 
+            elif result.error_type == PaymentErrorType.INSUFFICIENT_FUNDS:
+                await order_service.return_to_pending(order_id)
+                await session.commit()
+
+                if account_id:
+                    await self._update_account_stats(account_id, success=False)
+                    self._update_warmth_on_order_complete(account_id, success=False)
+
+                item.retry_count = 0
+                await self._queue.requeue(item, delay=self._insufficient_funds_retry_delay)
+
+                logger.warning(
+                    f"Order {order_id} delayed for insufficient funds retry in "
+                    f"{self._insufficient_funds_retry_delay}s: {result.error_message}"
+                )
+
             elif result.should_retry and item.can_retry:
                 # Временная ошибка: возвращаем в очередь
                 await order_service.return_to_pending(order_id)
@@ -832,7 +897,11 @@ class OrderWorker:
                     except Exception as callback_err:
                         logger.exception(f"Error in on_order_failed callback for order {order_id}: {callback_err}")
 
-    async def _recover_stuck_orders(self) -> None:
+    async def _recover_stuck_orders(
+        self,
+        recover_redis_processing: bool = True,
+        recover_pending: bool = True,
+    ) -> None:
         """
         Восстановить застрявшие заказы при старте.
 
@@ -845,7 +914,7 @@ class OrderWorker:
         logger.info("Recovering stuck orders...")
 
         # 1. Восстановление из Redis processing set (если используется Redis)
-        if isinstance(self._queue, RedisQueue):
+        if recover_redis_processing and isinstance(self._queue, RedisQueue):
             processing_items = await self._queue.get_processing_items()
             for item in processing_items:
                 logger.warning(f"Recovering order {item.order_id} from Redis processing set")
@@ -874,6 +943,9 @@ class OrderWorker:
 
         # 3. Восстановление pending заказов, которые не попали в очередь
         # (например, если воркер был недоступен при создании заказа)
+        if not recover_pending:
+            return
+
         async with async_session_factory() as session:
             order_service = OrderService(session)
             pending_orders = await order_service.get_pending_orders(limit=100)
@@ -888,6 +960,27 @@ class OrderWorker:
                 logger.info(f"Recovered {recovered_pending} pending orders that were never queued")
             elif not stuck_orders:
                 logger.info("No stuck orders found in DB")
+
+    async def _recover_retryable_failed_orders(self) -> None:
+        """Requeue old failed non-balance orders caused by Fragment wallet funds."""
+        recovered_order_ids: list[int] = []
+        async with async_session_factory() as session:
+            order_service = OrderService(session)
+            orders = await order_service.get_retryable_failed_orders(
+                older_than_seconds=int(self._maintenance_interval)
+            )
+
+            for order in orders:
+                if await order_service.retry_order(order.id, debit_balance=False):
+                    recovered_order_ids.append(order.id)
+
+            await session.commit()
+
+        for order_id in recovered_order_ids:
+            await self._queue.enqueue(order_id)
+
+        if recovered_order_ids:
+            logger.info(f"Recovered {len(recovered_order_ids)} retryable failed orders")
 
     async def enqueue_order(self, order_id: int, max_retries: int = 3) -> None:
         """
