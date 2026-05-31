@@ -39,6 +39,7 @@ from src.services.ton_payment_service import (
 )
 from src.services.telegram_logger import tg_logger
 from src.services.bot_settings_service import get_cryptobot_fee
+from src.bot.menu_media import edit_menu_message
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,15 @@ async def safe_edit_message(
         return True
     except Exception as e:
         logger.debug(f"Failed to edit message: {e}")
+        try:
+            await message.edit_caption(
+                caption=text,
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+            return True
+        except Exception as caption_error:
+            logger.debug(f"Failed to edit caption: {caption_error}")
         return False
 
 
@@ -102,6 +112,16 @@ async def edit_bot_message(
         )
     except Exception as e:
         logger.warning(f"Failed to edit message: {e}")
+        try:
+            await bot.edit_message_caption(
+                chat_id=chat_id,
+                message_id=message_id,
+                caption=text,
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+        except Exception as caption_error:
+            logger.warning(f"Failed to edit caption: {caption_error}")
 
 
 # ==================== ПОПОЛНЕНИЕ БАЛАНСА ====================
@@ -129,8 +149,9 @@ async def callback_deposit_menu(callback: CallbackQuery, state: FSMContext) -> N
         lang = db_user.language_code or lang
         await state.update_data(lang=lang)
 
-        await safe_edit_message(
-            callback.message,
+        sent_message = await edit_menu_message(
+            callback,
+            "deposit",
             text=(
                 f"{t('deposit.title', lang)}\n\n"
                 f"{t('deposit.current_balance', lang, balance=f'{db_user.balance_usdt:,.2f}')}\n\n"
@@ -139,6 +160,8 @@ async def callback_deposit_menu(callback: CallbackQuery, state: FSMContext) -> N
             ),
             reply_markup=get_amount_input_keyboard(lang),
         )
+        if sent_message:
+            await state.update_data(bot_message_id=sent_message.message_id)
 
     await callback.answer()
 

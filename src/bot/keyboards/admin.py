@@ -93,6 +93,7 @@ class AdminCallback:
     SETTINGS_PAYMENT_TON = "admin:settings:payment:ton"  # Настройки TON
     SETTINGS_REFERRAL = "admin:settings:referral"
     SETTINGS_SUPPORT = "admin:settings:support"
+    SETTINGS_MEDIA = "admin:settings:media"
     SETTINGS_BACK = "admin:settings:back"
     SETTINGS_CANCEL = "admin:settings:cancel"
 
@@ -830,12 +831,45 @@ def get_settings_menu_keyboard(settings: dict) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
+                    text="Медиа",
+                    callback_data=AdminCallback.SETTINGS_MEDIA,
+                ),
+            ],
+            [
+                InlineKeyboardButton(
                     text="◀️ Назад",
                     callback_data=AdminCallback.BACK,
                 ),
             ],
         ]
     )
+
+
+def get_settings_media_keyboard(media: dict, items: dict) -> InlineKeyboardMarkup:
+    buttons = []
+    for key, title in items.items():
+        marker = "✅" if media.get(key) else "➕"
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{marker} {title}",
+                callback_data=f"admin:settings:media:set:{key}",
+            ),
+        ])
+        if media.get(key):
+            buttons.append([
+                InlineKeyboardButton(
+                    text=f"Удалить: {title}",
+                    callback_data=f"admin:settings:media:remove:{key}",
+                ),
+            ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            text="◀️ Назад",
+            callback_data=AdminCallback.SETTINGS_BACK,
+        ),
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def get_settings_support_keyboard(settings: dict) -> InlineKeyboardMarkup:

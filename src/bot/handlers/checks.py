@@ -48,6 +48,7 @@ from src.services.telegram_logger import tg_logger
 from src.services.bot_settings_service import get_star_price, get_premium_prices
 from src.bot.keyboards.deposit import get_payment_method_keyboard
 from src.bot.handlers.deposit import DepositStates
+from src.bot.menu_media import edit_menu_message
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,7 @@ class EditCheckStates(StatesGroup):
     """Состояния для редактирования чека."""
 
     waiting_description = State()  # Ввод описания
+    waiting_photo = State()
     waiting_password = State()  # Ввод пароля
     waiting_recipient = State()  # Ввод получателя
 
@@ -342,6 +344,15 @@ async def safe_edit_message(
         return True
     except Exception as e:
         logger.debug(f"Failed to edit message: {e}")
+        try:
+            await message.edit_caption(
+                caption=text,
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+            return True
+        except Exception as caption_error:
+            logger.debug(f"Failed to edit caption: {caption_error}")
         return False
 
 
@@ -363,6 +374,16 @@ async def edit_bot_message(
         )
     except Exception as e:
         logger.warning(f"Failed to edit message: {e}")
+        try:
+            await bot.edit_message_caption(
+                chat_id=chat_id,
+                message_id=message_id,
+                caption=text,
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+        except Exception as caption_error:
+            logger.warning(f"Failed to edit caption: {caption_error}")
 
 
 def get_checks_menu_text(
@@ -400,8 +421,9 @@ async def callback_checks_menu(callback: CallbackQuery, state: FSMContext) -> No
         lang = db_user.language_code or lang
         await state.update_data(bot_message_id=callback.message.message_id, lang=lang)
 
-        await safe_edit_message(
-            callback.message,
+        sent_message = await edit_menu_message(
+            callback,
+            "checks",
             text=get_checks_menu_text(
                 db_user.balance_usdt,
                 db_user.balance_stars,
@@ -410,6 +432,8 @@ async def callback_checks_menu(callback: CallbackQuery, state: FSMContext) -> No
             ),
             reply_markup=get_checks_menu_keyboard(lang),
         )
+        if sent_message:
+            await state.update_data(bot_message_id=sent_message.message_id)
 
     await callback.answer()
 
@@ -434,8 +458,9 @@ async def callback_back_to_checks(callback: CallbackQuery, state: FSMContext) ->
         lang = db_user.language_code or lang
         await state.update_data(bot_message_id=callback.message.message_id, lang=lang)
 
-        await safe_edit_message(
-            callback.message,
+        sent_message = await edit_menu_message(
+            callback,
+            "checks",
             text=get_checks_menu_text(
                 db_user.balance_usdt,
                 db_user.balance_stars,
@@ -444,6 +469,8 @@ async def callback_back_to_checks(callback: CallbackQuery, state: FSMContext) ->
             ),
             reply_markup=get_checks_menu_keyboard(lang),
         )
+        if sent_message:
+            await state.update_data(bot_message_id=sent_message.message_id)
 
     await callback.answer()
 
@@ -1355,6 +1382,7 @@ async def _create_check(callback: CallbackQuery, state: FSMContext) -> None:
                 back_to="my",
                 lang=lang,
                 has_description=False,
+                has_photo=False,
             ),
         )
 
@@ -1839,6 +1867,7 @@ async def callback_view_check(callback: CallbackQuery, state: FSMContext) -> Non
             back_to=back_to,
             lang=lang,
             has_description=bool(check.description),
+            has_photo=bool(check.photo_file_id),
         ),
     )
     await callback.answer()
@@ -2072,8 +2101,135 @@ async def message_description(message: Message, state: FSMContext) -> None:
                     back_to="my",
                     lang=lang,
                     has_description=bool(check.description),
+                    has_photo=bool(check.photo_file_id),
                 ),
             )
+
+
+@router.callback_query(F.data.regexp(r"^checks:photo:\d+$"))
+async def callback_add_photo(callback: CallbackQuery, state: FSMContext) -> None:
+    user = callback.from_user
+    lang = await get_user_language(user.id, state, user.language_code)
+    check_id = int(callback.data.replace(ChecksCallback.ADD_PHOTO, ""))
+    check = await _get_check_by_id(check_id)
+
+    if not check or check.creator_id != callback.from_user.id or not check.is_active:
+        await callback.answer(t("checks.errors.not_found", lang), show_alert=True)
+        return
+
+    await state.set_state(EditCheckStates.waiting_photo)
+    await state.update_data(edit_check_id=check_id, bot_message_id=callback.message.message_id)
+    await safe_edit_message(
+        callback.message,
+        text="Отправьте фото, которое нужно прикрепить к чеку.",
+        reply_markup=get_description_edit_keyboard(check_id, bool(check.description), lang),
+    )
+    await callback.answer()
+
+
+@router.message(EditCheckStates.waiting_photo)
+async def message_check_photo(message: Message, state: FSMContext) -> None:
+    await safe_delete_message(message)
+
+    data = await state.get_data()
+    check_id = data.get("edit_check_id")
+    bot_message_id = data.get("bot_message_id")
+    lang = data.get("lang", "ru")
+
+    if not check_id:
+        await state.clear()
+        return
+
+    if not message.photo:
+        if bot_message_id:
+            await edit_bot_message(
+                message.bot,
+                message.chat.id,
+                bot_message_id,
+                text="Нужно отправить именно фото.",
+                reply_markup=get_description_edit_keyboard(check_id, False, lang),
+            )
+        return
+
+    photo_file_id = message.photo[-1].file_id
+
+    async with async_session_factory() as session:
+        result = await session.execute(select(Check).where(Check.id == check_id))
+        check = result.scalar_one_or_none()
+
+        if not check or check.creator_id != message.from_user.id:
+            await state.clear()
+            return
+
+        check.photo_file_id = photo_file_id
+        await session.commit()
+
+    await state.clear()
+
+    if bot_message_id:
+        check = await _get_check_by_id(check_id)
+        if check:
+            bot_info = await message.bot.get_me()
+            check_link = f"https://t.me/{bot_info.username}?start=check_{check.code}"
+            text = await build_check_detail_text(check, check_link, lang)
+            is_fully_used = check.current_activations >= check.max_activations
+            is_active = check.is_active and not is_fully_used
+            await edit_bot_message(
+                message.bot,
+                message.chat.id,
+                bot_message_id,
+                text=text,
+                reply_markup=get_check_detail_keyboard(
+                    check_id=check.id,
+                    is_active=is_active,
+                    check_code=check.code,
+                    back_to="my",
+                    lang=lang,
+                    has_description=bool(check.description),
+                    has_photo=bool(check.photo_file_id),
+                ),
+            )
+
+
+@router.callback_query(F.data.startswith("checks:photo:remove:"))
+async def callback_remove_photo(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    lang = data.get("lang", "ru")
+    check_id = int(callback.data.split(":")[-1])
+
+    async with async_session_factory() as session:
+        result = await session.execute(select(Check).where(Check.id == check_id))
+        check = result.scalar_one_or_none()
+
+        if not check or check.creator_id != callback.from_user.id:
+            await callback.answer(t("checks.errors.not_found", lang), show_alert=True)
+            return
+
+        check.photo_file_id = None
+        await session.commit()
+
+        bot_info = await callback.bot.get_me()
+        check_link = f"https://t.me/{bot_info.username}?start=check_{check.code}"
+        text = await build_check_detail_text(check, check_link, lang)
+        is_fully_used = check.current_activations >= check.max_activations
+        is_active = check.is_active and not is_fully_used
+
+        await safe_edit_message(
+            callback.message,
+            text=text,
+            reply_markup=get_check_detail_keyboard(
+                check_id=check.id,
+                is_active=is_active,
+                check_code=check.code,
+                back_to="my",
+                lang=lang,
+                has_description=bool(check.description),
+                has_photo=False,
+            ),
+        )
+
+    await state.clear()
+    await callback.answer("Фото удалено")
 
 
 @router.callback_query(F.data.startswith("checks:description:remove:"))
@@ -2116,6 +2272,7 @@ async def callback_remove_description(callback: CallbackQuery, state: FSMContext
                 back_to="my",
                 lang=lang,
                 has_description=False,
+                has_photo=bool(check.photo_file_id),
             ),
         )
 

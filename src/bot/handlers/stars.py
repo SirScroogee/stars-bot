@@ -45,6 +45,7 @@ from src.services.ton_payment_service import (
     check_ton_payment,
 )
 from src.workers.order_worker import get_order_worker
+from src.bot.menu_media import edit_menu_message
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,15 @@ async def safe_edit_message(
         return True
     except Exception as e:
         logger.debug(f"Failed to edit message: {e}")
+        try:
+            await message.edit_caption(
+                caption=text,
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+            return True
+        except Exception as caption_error:
+            logger.debug(f"Failed to edit caption: {caption_error}")
         return False
 
 
@@ -140,6 +150,16 @@ async def edit_bot_message(
         )
     except Exception as e:
         logger.warning(f"Failed to edit message: {e}")
+        try:
+            await bot.edit_message_caption(
+                chat_id=chat_id,
+                message_id=message_id,
+                caption=text,
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+        except Exception as caption_error:
+            logger.warning(f"Failed to edit caption: {caption_error}")
 
 
 # ==================== ГЛАВНОЕ МЕНЮ ЗВЁЗД ====================
@@ -174,11 +194,14 @@ async def callback_stars_menu(callback: CallbackQuery, state: FSMContext) -> Non
             star_price=str(star_price),
         )
 
-        await safe_edit_message(
-            callback.message,
+        sent_message = await edit_menu_message(
+            callback,
+            "stars",
             text=get_stars_menu_text(db_user.balance_usdt, db_user.balance_stars, lang),
             reply_markup=get_stars_menu_keyboard(lang),
         )
+        if sent_message:
+            await state.update_data(bot_message_id=sent_message.message_id)
 
     await callback.answer()
 
@@ -212,11 +235,14 @@ async def callback_back_to_stars(callback: CallbackQuery, state: FSMContext) -> 
             star_price=str(star_price),
         )
 
-        await safe_edit_message(
-            callback.message,
+        sent_message = await edit_menu_message(
+            callback,
+            "stars",
             text=get_stars_menu_text(db_user.balance_usdt, db_user.balance_stars, lang),
             reply_markup=get_stars_menu_keyboard(lang),
         )
+        if sent_message:
+            await state.update_data(bot_message_id=sent_message.message_id)
 
     await callback.answer()
 
@@ -1628,5 +1654,3 @@ async def callback_confirm_withdraw(callback: CallbackQuery, state: FSMContext) 
 
     await state.clear()
     await callback.answer()
-
-

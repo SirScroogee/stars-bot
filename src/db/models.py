@@ -286,6 +286,7 @@ class Check(Base):
 
     # Описание чека (отображается при отправке)
     description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    photo_file_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     # Ограничения
     recipient_username: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # Username получателя
@@ -543,7 +544,6 @@ class FragmentAccount(Base):
         Index("ix_fragment_accounts_status", "status"),
         Index("ix_fragment_accounts_is_active", "is_active"),
     )
-
 
 
 

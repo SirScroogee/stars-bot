@@ -12,6 +12,7 @@ from src.bot.keyboards.menu import MenuCallback, get_back_button, get_support_ke
 from src.db.session import async_session_factory
 from src.locales import t, get_user_locale
 from src.services.user_service import UserService
+from src.bot.menu_media import edit_menu_message
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +64,11 @@ async def callback_referral(callback: CallbackQuery) -> None:
         )
 
         try:
-            await callback.message.edit_text(
+            await edit_menu_message(
+                callback,
+                "referral",
                 text=text,
                 reply_markup=get_back_button(lang),
-                parse_mode="HTML",
             )
         except Exception as e:
             logger.debug(f"Failed to edit referral message: {e}")
@@ -97,10 +99,11 @@ async def callback_support(callback: CallbackQuery) -> None:
     text = f"{t('support.title', lang)}\n\n{t('support.text', lang)}\n\n{get_legal_links_text(lang)}"
 
     try:
-        await callback.message.edit_text(
+        await edit_menu_message(
+            callback,
+            "support",
             text=text,
             reply_markup=get_support_keyboard(support_username, lang),
-            parse_mode="HTML",
             disable_web_page_preview=True,
         )
     except Exception as e:

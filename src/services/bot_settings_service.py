@@ -51,6 +51,7 @@ DEFAULT_BOT_SETTINGS = {
     "ton_wallet_address": "",
     "support_username": "support",
     "news_channel_url": "",
+    "menu_media": {},
 }
 
 

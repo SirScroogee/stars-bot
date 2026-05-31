@@ -10,6 +10,7 @@ from aiogram import Router
 from aiogram.types import (
     InlineQuery,
     InlineQueryResultArticle,
+    InlineQueryResultCachedPhoto,
     InputTextMessageContent,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -907,16 +908,27 @@ async def _show_check_result(
         ]
     )
 
-    check_result = InlineQueryResultArticle(
-        id=f"check_{check_code}",
-        title=title,
-        description=description,
-        input_message_content=InputTextMessageContent(
-            message_text=message_text,
+    if check.photo_file_id:
+        check_result = InlineQueryResultCachedPhoto(
+            id=f"check_{check_code}",
+            photo_file_id=check.photo_file_id,
+            title=title,
+            description=description,
+            caption=message_text,
             parse_mode="HTML",
-        ),
-        reply_markup=keyboard,
-    )
+            reply_markup=keyboard,
+        )
+    else:
+        check_result = InlineQueryResultArticle(
+            id=f"check_{check_code}",
+            title=title,
+            description=description,
+            input_message_content=InputTextMessageContent(
+                message_text=message_text,
+                parse_mode="HTML",
+            ),
+            reply_markup=keyboard,
+        )
 
     await inline_query.answer(
         results=[check_result],

@@ -39,6 +39,7 @@ from src.db.session import async_session_factory
 from src.locales import t, get_user_locale
 from src.services.bot_settings_service import get_referral_percents
 from src.services.user_service import UserService
+from src.bot.menu_media import edit_menu_message
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,15 @@ async def safe_edit_message(
         return True
     except Exception as e:
         logger.debug(f"Failed to edit message: {e}")
+        try:
+            await message.edit_caption(
+                caption=text,
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+            return True
+        except Exception as caption_error:
+            logger.debug(f"Failed to edit caption: {caption_error}")
         return False
 
 
@@ -141,8 +151,9 @@ async def callback_profile(callback: CallbackQuery, state: FSMContext) -> None:
         # Показываем кнопку вывода реферального баланса если есть баланс
         has_ref_balance = db_user.referral_balance > Decimal("0")
 
-        await safe_edit_message(
-            callback.message,
+        await edit_menu_message(
+            callback,
+            "profile",
             text=profile_text,
             reply_markup=get_profile_keyboard(lang, has_referral_balance=has_ref_balance),
         )
@@ -190,8 +201,9 @@ async def callback_referrals(callback: CallbackQuery) -> None:
             percent3=int(ref_percents[3]),
         )
 
-        await safe_edit_message(
-            callback.message,
+        await edit_menu_message(
+            callback,
+            "referral",
             text=referrals_text,
             reply_markup=get_referrals_keyboard(lang),
         )

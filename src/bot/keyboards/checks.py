@@ -34,6 +34,7 @@ class ChecksCallback:
     DELETE_CHECK = "checks:delete:"  # + check_id
     SHARE_CHECK = "checks:share:"  # + check_id
     ADD_DESCRIPTION = "checks:description:"  # + check_id
+    ADD_PHOTO = "checks:photo:"  # + check_id
     RESTRICTIONS = "checks:restrictions:"  # + check_id
 
     # Пагинация
@@ -504,6 +505,7 @@ def get_check_detail_keyboard(
     back_to: str = "my",
     lang: str = "ru",
     has_description: bool = False,
+    has_photo: bool = False,
 ) -> InlineKeyboardMarkup:
     """Клавиатура детального просмотра чека.
 
@@ -549,6 +551,21 @@ def get_check_detail_keyboard(
             ])
 
         # Кнопка ограничения
+        if has_photo:
+            buttons.append([
+                InlineKeyboardButton(
+                    text="Удалить фото",
+                    callback_data=f"checks:photo:remove:{check_id}",
+                ),
+            ])
+        else:
+            buttons.append([
+                InlineKeyboardButton(
+                    text="Добавить фото",
+                    callback_data=f"{ChecksCallback.ADD_PHOTO}{check_id}",
+                ),
+            ])
+
         buttons.append([
             InlineKeyboardButton(
                 text=t("checks.detail_buttons.restrictions", lang),

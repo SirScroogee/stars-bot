@@ -23,6 +23,7 @@ from src.bot.legal import PRIVACY_POLICY_URL, USER_AGREEMENT_URL, get_legal_link
 from src.bot.keyboards.menu import MenuCallback, get_main_menu_keyboard
 from src.bot.keyboards.stars import get_recipient_keyboard, StarsCallback
 from src.bot.keyboards.premium import get_premium_recipient_keyboard
+from src.bot.menu_media import answer_menu_message, edit_menu_message
 from src.db.models import Check, CheckActivation, User
 from src.db.session import async_session_factory
 from src.services.user_service import UserService
@@ -363,10 +364,11 @@ async def _process_start(
 
         bot_settings = await get_bot_settings()
 
-        await message.answer(
+        await answer_menu_message(
+            message,
+            "main",
             text=f"{welcome_text}\n\n{get_legal_links_text(lang)}",
             reply_markup=get_main_menu_keyboard(lang, bot_settings.get("news_channel_url")),
-            parse_mode="HTML",
             disable_web_page_preview=True,
         )
 
@@ -835,10 +837,12 @@ async def callback_back_to_menu(callback: CallbackQuery, state: FSMContext) -> N
 
         try:
             bot_settings = await get_bot_settings()
-            await callback.message.edit_text(
-                text=welcome_text,
+            await edit_menu_message(
+                callback,
+                "main",
+                text=f"{welcome_text}\n\n{get_legal_links_text(lang)}",
                 reply_markup=get_main_menu_keyboard(lang, bot_settings.get("news_channel_url")),
-                parse_mode="HTML",
+                disable_web_page_preview=True,
             )
         except Exception as e:
             logger.debug(f"Failed to edit menu message: {e}")

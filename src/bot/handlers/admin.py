@@ -17,6 +17,7 @@ from sqlalchemy import func, select, and_, desc, case
 
 from src.bot.handlers.admin_utils import (
     check_admin,
+    check_admin_message,
     to_moscow_time,
     format_percent as _format_percent,
     MOSCOW_TZ,
@@ -53,6 +54,7 @@ from src.bot.keyboards.admin import (
     get_settings_cost_keyboard,
     get_settings_referral_keyboard,
     get_settings_support_keyboard,
+    get_settings_media_keyboard,
     get_settings_cancel_keyboard,
 )
 from src.bot.keyboards.calendar import get_calendar_keyboard
@@ -65,6 +67,7 @@ from src.services.user_service import UserService
 from src.services.telegram_logger import tg_logger
 from src.services.log_settings_service import LogSettingsService, invalidate_log_settings_cache
 from src.services.bot_settings_service import BotSettingsService, invalidate_bot_settings_cache
+from src.bot.menu_media import MENU_MEDIA_ITEMS, get_menu_media
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +90,7 @@ class AdminStates(StatesGroup):
     promo_waiting_expires = State()  # Ожидание срока действия
     # Настройки
     settings_waiting_value = State()  # Ожидание нового значения настройки
+    settings_waiting_media_photo = State()
 
 
 def get_period_start(period: str) -> datetime | None:
@@ -2896,6 +2900,149 @@ async def callback_settings_support(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
+@router.callback_query(F.data == AdminCallback.SETTINGS_MEDIA)
+async def callback_settings_media(callback: CallbackQuery, state: FSMContext) -> None:
+    """Настройки фото пользовательских меню."""
+    if not await _check_admin(callback):
+        return
+
+    await state.clear()
+
+    async with async_session_factory() as session:
+        service = BotSettingsService(session)
+        settings = await service.get_settings()
+
+    media = get_menu_media(settings)
+    await callback.message.edit_text(
+        text=(
+            "🖼 <b>Медиа меню</b>\n\n"
+            "Выберите меню и отправьте фото. Если фото не задано, пользователи увидят обычный текст."
+        ),
+        reply_markup=get_settings_media_keyboard(media, MENU_MEDIA_ITEMS),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:settings:media:set:"))
+async def callback_settings_media_set(callback: CallbackQuery, state: FSMContext) -> None:
+    """Начать загрузку фото для меню."""
+    if not await _check_admin(callback):
+        return
+
+    menu_key = callback.data.rsplit(":", 1)[-1]
+    if menu_key not in MENU_MEDIA_ITEMS:
+        await callback.answer("Меню не найдено", show_alert=True)
+        return
+
+    await state.set_state(AdminStates.settings_waiting_media_photo)
+    await state.update_data(
+        media_menu_key=menu_key,
+        bot_message_id=callback.message.message_id,
+        section="media",
+    )
+
+    await callback.message.edit_text(
+        text=f"Отправьте фото для меню: <b>{MENU_MEDIA_ITEMS[menu_key]}</b>",
+        reply_markup=get_settings_cancel_keyboard(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.settings_waiting_media_photo)
+async def message_settings_media_photo(message: Message, state: FSMContext) -> None:
+    """Сохранить фото для пользовательского меню."""
+    if not await check_admin_message(message):
+        return
+
+    data = await state.get_data()
+    menu_key = data.get("media_menu_key")
+    bot_message_id = data.get("bot_message_id")
+
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+    if menu_key not in MENU_MEDIA_ITEMS:
+        await state.clear()
+        return
+
+    if not message.photo:
+        if bot_message_id:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=bot_message_id,
+                text="Нужно отправить именно фото.",
+                reply_markup=get_settings_cancel_keyboard(),
+                parse_mode="HTML",
+            )
+        return
+
+    photo_file_id = message.photo[-1].file_id
+
+    async with async_session_factory() as session:
+        service = BotSettingsService(session, admin_id=message.from_user.id)
+        settings = await service.get_settings()
+        media = get_menu_media(settings).copy()
+        media[menu_key] = photo_file_id
+        settings["menu_media"] = media
+        await service.save_settings(settings)
+        await session.commit()
+
+    invalidate_bot_settings_cache()
+    await state.clear()
+
+    async with async_session_factory() as session:
+        service = BotSettingsService(session)
+        settings = await service.get_settings()
+
+    if bot_message_id:
+        await message.bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=bot_message_id,
+            text=f"✅ Фото для меню <b>{MENU_MEDIA_ITEMS[menu_key]}</b> сохранено.",
+            reply_markup=get_settings_media_keyboard(get_menu_media(settings), MENU_MEDIA_ITEMS),
+            parse_mode="HTML",
+        )
+
+
+@router.callback_query(F.data.startswith("admin:settings:media:remove:"))
+async def callback_settings_media_remove(callback: CallbackQuery, state: FSMContext) -> None:
+    """Удалить фото пользовательского меню."""
+    if not await _check_admin(callback):
+        return
+
+    menu_key = callback.data.rsplit(":", 1)[-1]
+    if menu_key not in MENU_MEDIA_ITEMS:
+        await callback.answer("Меню не найдено", show_alert=True)
+        return
+
+    async with async_session_factory() as session:
+        service = BotSettingsService(session, admin_id=callback.from_user.id)
+        settings = await service.get_settings()
+        media = get_menu_media(settings).copy()
+        media.pop(menu_key, None)
+        settings["menu_media"] = media
+        await service.save_settings(settings)
+        await session.commit()
+
+    invalidate_bot_settings_cache()
+    await state.clear()
+
+    async with async_session_factory() as session:
+        service = BotSettingsService(session)
+        settings = await service.get_settings()
+
+    await callback.message.edit_text(
+        text=f"Фото для меню <b>{MENU_MEDIA_ITEMS[menu_key]}</b> удалено.",
+        reply_markup=get_settings_media_keyboard(get_menu_media(settings), MENU_MEDIA_ITEMS),
+        parse_mode="HTML",
+    )
+    await callback.answer("Удалено")
+
+
 # Алиас для обратной совместимости
 format_percent = _format_percent
 
@@ -3579,6 +3726,8 @@ async def callback_settings_cancel(callback: CallbackQuery, state: FSMContext) -
         await callback_settings_referral(callback)
     elif section == "support":
         await callback_settings_support(callback)
+    elif section == "media":
+        await callback_settings_media(callback, state)
     elif section == "cryptobot":
         await callback_settings_cryptobot(callback)
     elif section == "ton":
