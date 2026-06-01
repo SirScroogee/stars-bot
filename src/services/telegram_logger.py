@@ -4,6 +4,7 @@
 Логирует события в реальном времени в соответствующие топики группы.
 """
 import asyncio
+import html
 import logging
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
@@ -168,14 +169,14 @@ class TelegramLogger:
     ) -> None:
         """Логировать ошибку."""
         text = f"<b>ERROR</b> | {self._now()}\n\n"
-        text += f"<b>Тип:</b> {error_type}\n"
-        text += f"<b>Ошибка:</b> <code>{error_message}</code>\n"
+        text += f"<b>Тип:</b> {html.escape(str(error_type))}\n"
+        text += f"<b>Ошибка:</b> <code>{html.escape(str(error_message))}</code>\n"
 
         if user_id:
             text += f"<b>Пользователь:</b> {self._format_user(user_id, username)}\n"
 
         if details:
-            text += f"\n<b>Детали:</b>\n<pre>{details[:500]}</pre>"
+            text += f"\n<b>Детали:</b>\n<pre>{html.escape(str(details)[:500])}</pre>"
 
         await self._send("errors", "error", text)
 
@@ -190,9 +191,61 @@ class TelegramLogger:
         text = f"<b>ORDER ERROR</b> | {self._now()}\n\n"
         text += f"<b>Заказ:</b> #{order_id}\n"
         text += f"<b>Пользователь:</b> {self._format_user(user_id, username)}\n"
-        text += f"<b>Ошибка:</b> <code>{error_message}</code>"
+        text += f"<b>Ошибка:</b> <code>{html.escape(str(error_message))}</code>"
 
         await self._send("errors", "order_error", text)
+
+    async def log_fragment_session_expired(
+        self,
+        account_id: int,
+        account_name: str,
+        error_message: str,
+    ) -> None:
+        """Уведомить об истекшей сессии Fragment аккаунта."""
+        safe_name = html.escape(str(account_name))
+        safe_error = html.escape(str(error_message))
+        text = (
+            f"<b>FRAGMENT SESSION EXPIRED</b> | {self._now()}\n\n"
+            f"<b>Аккаунт:</b> {safe_name} (<code>{account_id}</code>)\n"
+            f"<b>Ошибка:</b> <code>{safe_error}</code>\n\n"
+            "⚠️ Сессия Fragment истекла. Нужно обновить cookies/tokens аккаунта в админке."
+        )
+
+        await self._send("errors", "fragment_session_expired", text)
+        await self._notify_admins(text)
+
+    async def _notify_admins(self, text: str) -> None:
+        """Отправить важное уведомление всем админам из базы."""
+        if not self._bot:
+            return
+
+        try:
+            from sqlalchemy import select
+            from src.db.models import User
+            from src.db.session import async_session_factory
+
+            async with async_session_factory() as session:
+                result = await session.execute(
+                    select(User.id)
+                    .where(User.is_admin == True)
+                    .where(User.is_banned == False)
+                )
+                admin_ids = [row[0] for row in result.fetchall()]
+        except Exception as e:
+            logger.error(f"Failed to load admins for notification: {e}")
+            return
+
+        for admin_id in admin_ids:
+            try:
+                await self._bot.send_message(
+                    chat_id=admin_id,
+                    text=text,
+                    parse_mode="HTML",
+                )
+            except TelegramAPIError as e:
+                logger.warning(f"Failed to notify admin {admin_id}: {e}")
+            except Exception as e:
+                logger.warning(f"Unexpected notify error for admin {admin_id}: {e}")
 
     # ==================== ОПЛАТЫ ====================
 

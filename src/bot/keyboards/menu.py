@@ -22,6 +22,7 @@ class MenuCallback:
 def get_main_menu_keyboard(
     lang: str = "ru",
     news_channel_url: str | None = None,
+    is_admin: bool = False,
 ) -> InlineKeyboardMarkup:
     """Получить клавиатуру главного меню."""
     service_buttons = []
@@ -36,6 +37,21 @@ def get_main_menu_keyboard(
         InlineKeyboardButton(
             text=t("menu.buttons.support", lang),
             callback_data=MenuCallback.SUPPORT,
+        )
+    )
+
+    profile_row = []
+    if is_admin:
+        profile_row.append(
+            InlineKeyboardButton(
+                text=t("menu.buttons.checks", lang),
+                callback_data=MenuCallback.CHECKS,
+            )
+        )
+    profile_row.append(
+        InlineKeyboardButton(
+            text=t("menu.buttons.profile", lang),
+            callback_data=MenuCallback.PROFILE,
         )
     )
 
@@ -63,16 +79,7 @@ def get_main_menu_keyboard(
                 ),
             ],
             # Строка 3: Чеки | Профиль
-            [
-                InlineKeyboardButton(
-                    text=t("menu.buttons.checks", lang),
-                    callback_data=MenuCallback.CHECKS,
-                ),
-                InlineKeyboardButton(
-                    text=t("menu.buttons.profile", lang),
-                    callback_data=MenuCallback.PROFILE,
-                ),
-            ],
+            profile_row,
             # Строка 4: Новости | Поддержка
             service_buttons,
         ]

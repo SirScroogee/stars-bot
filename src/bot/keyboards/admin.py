@@ -119,6 +119,7 @@ class AdminCallback:
     # Рассылка
     BROADCAST_TEXT = "admin:broadcast:text"
     BROADCAST_PHOTO = "admin:broadcast:photo"
+    BROADCAST_STICKER = "admin:broadcast:sticker"
     BROADCAST_CONFIRM = "admin:broadcast:confirm"
     BROADCAST_CANCEL = "admin:broadcast:cancel"
     BROADCAST_BACK = "admin:broadcast:back"
@@ -1502,6 +1503,12 @@ def get_broadcast_menu_keyboard(users_count: int = 0) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="🖼️ Фото (с текстом или без)",
                     callback_data=AdminCallback.BROADCAST_PHOTO,
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🏷️ Стикер",
+                    callback_data=AdminCallback.BROADCAST_STICKER,
                 ),
             ],
             [

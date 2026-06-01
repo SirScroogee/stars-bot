@@ -20,6 +20,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select, func, desc
+from sqlalchemy.orm import selectinload
 
 from src.bot.handlers.admin_utils import (
     check_admin,

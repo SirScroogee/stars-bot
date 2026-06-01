@@ -5,7 +5,7 @@ import logging
 from datetime import datetime
 from decimal import Decimal
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message, LinkPreviewOptions
@@ -390,7 +390,7 @@ async def callback_order_view(callback: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data.regexp(r"^admin:orders:user:\d+$"))
-async def callback_order_user(callback: CallbackQuery) -> None:
+async def callback_order_user(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     """Переход к карточке пользователя заказа."""
     if not await _check_admin(callback):
         return
@@ -405,12 +405,10 @@ async def callback_order_user(callback: CallbackQuery) -> None:
             await callback.answer("Заказ не найден", show_alert=True)
             return
 
-    # Перенаправляем на карточку пользователя
-    callback.data = f"admin:users:view:{order.user_id}"
-
     # Импортируем тут, чтобы избежать циклического импорта
     from src.bot.handlers.admin_users import callback_user_view
-    await callback_user_view(callback)
+    user_callback = callback.model_copy(update={"data": f"admin:users:view:{order.user_id}"})
+    await callback_user_view(user_callback, state, bot)
 
 
 # ==================== ПОИСК ЗАКАЗОВ ====================
@@ -610,9 +608,8 @@ async def callback_order_retry_confirm(callback: CallbackQuery) -> None:
         else:
             await callback.answer("❌ Не удалось повторить заказ", show_alert=True)
 
-    # Возвращаемся к списку заказов
-    callback.data = f"admin:orders:view:{order_id}"
-    await callback_order_view(callback)
+    order_callback = callback.model_copy(update={"data": f"admin:orders:view:{order_id}"})
+    await callback_order_view(order_callback)
 
 
 @router.callback_query(F.data == "admin:orders:retry:all")
@@ -726,9 +723,8 @@ async def callback_order_cancel_confirm(callback: CallbackQuery) -> None:
         else:
             await callback.answer("❌ Не удалось отменить заказ", show_alert=True)
 
-    # Возвращаемся к просмотру заказа
-    callback.data = f"admin:orders:view:{order_id}"
-    await callback_order_view(callback)
+    order_callback = callback.model_copy(update={"data": f"admin:orders:view:{order_id}"})
+    await callback_order_view(order_callback)
 
 
 @router.callback_query(F.data.regexp(r"^admin:orders:refund:\d+$"))
@@ -788,9 +784,8 @@ async def callback_order_refund_confirm(callback: CallbackQuery) -> None:
         else:
             await callback.answer("❌ Не удалось оформить возврат", show_alert=True)
 
-    # Возвращаемся к просмотру заказа
-    callback.data = f"admin:orders:view:{order_id}"
-    await callback_order_view(callback)
+    order_callback = callback.model_copy(update={"data": f"admin:orders:view:{order_id}"})
+    await callback_order_view(order_callback)
 
 
 # ==================== СТАТИСТИКА ====================

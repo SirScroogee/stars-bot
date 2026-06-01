@@ -9,6 +9,7 @@ Handlers для просмотра статуса воркеров (автона
 import logging
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery
 
 from src.bot.handlers.admin_utils import check_admin
@@ -191,11 +192,15 @@ async def refresh_workers(callback: CallbackQuery):
         status = supervisor.get_status()
         text = format_supervisor_status(status, active_accounts_count)
 
-    await callback.message.edit_text(
-        text,
-        reply_markup=get_workers_status_keyboard(),
-        parse_mode="HTML",
-    )
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_workers_status_keyboard(),
+            parse_mode="HTML",
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" not in str(e).lower():
+            raise
     await callback.answer("Обновлено")
 
 

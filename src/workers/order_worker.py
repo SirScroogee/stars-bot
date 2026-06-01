@@ -498,9 +498,19 @@ class OrderWorker:
         """Пометить аккаунт как имеющий истёкшую сессию."""
         async with async_session_factory() as session:
             service = FragmentAccountService(session)
+            account = await service.get_account(account_id)
+            should_notify = bool(account and account.status != FragmentAccountStatus.SESSION_EXPIRED.value)
+            account_name = account.name if account else f"Account #{account_id}"
             await service.mark_session_expired(account_id, error)
             await session.commit()
             logger.warning(f"Fragment account {account_id} marked as session_expired")
+
+        if should_notify:
+            await tg_logger.log_fragment_session_expired(
+                account_id=account_id,
+                account_name=account_name,
+                error_message=error,
+            )
 
     async def _run_loop(self) -> None:
         """

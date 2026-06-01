@@ -476,9 +476,8 @@ async def callback_fragment_set_priority(callback: CallbackQuery) -> None:
 
     await callback.answer(f"✅ Приоритет изменён: {priority_names.get(priority, priority)}", show_alert=True)
 
-    # Возвращаемся к просмотру аккаунта
-    callback.data = f"admin:fragment:view:{account_id}"
-    await callback_fragment_view(callback)
+    view_callback = callback.model_copy(update={"data": f"admin:fragment:view:{account_id}"})
+    await callback_fragment_view(view_callback)
 
 
 @router.callback_query(F.data.regexp(r"^admin:fragment:edit:\d+:(name|tonapi|mnemonic|hash)$"))
@@ -1057,12 +1056,12 @@ async def callback_fragment_cancel(callback: CallbackQuery, state: FSMContext) -
 
     # Если редактировали аккаунт — возвращаемся к меню редактирования
     if edit_account_id:
-        callback.data = f"admin:fragment:edit:{edit_account_id}"
-        await callback_fragment_edit_menu(callback)
+        edit_callback = callback.model_copy(update={"data": f"admin:fragment:edit:{edit_account_id}"})
+        await callback_fragment_edit_menu(edit_callback)
     # Если обновляли сессию — возвращаемся к просмотру аккаунта
     elif session_account_id:
-        callback.data = f"admin:fragment:view:{session_account_id}"
-        await callback_fragment_view(callback)
+        view_callback = callback.model_copy(update={"data": f"admin:fragment:view:{session_account_id}"})
+        await callback_fragment_view(view_callback)
     # Иначе — в главное меню
     else:
         await callback_fragment_menu(callback, state)
@@ -1211,5 +1210,4 @@ async def _auto_refresh_all_accounts() -> int:
             await asyncio.sleep(0.3)
 
     return refreshed
-
 

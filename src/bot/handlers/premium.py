@@ -30,6 +30,7 @@ from src.db.models import ProductType, PaymentProvider, Transaction
 from src.locales import t, get_user_locale
 from src.services.user_service import UserService
 from src.services.order_service import OrderService
+from src.services.fragment_account_service import FragmentAccountService
 from src.services.recipient_service import validate_premium_recipient
 from src.services.bot_settings_service import get_bot_settings, get_cryptobot_fee
 from src.services.cryptopay_service import (
@@ -608,6 +609,14 @@ async def callback_pay_balance(callback: CallbackQuery, state: FSMContext) -> No
     async with async_session_factory() as session:
         user_service = UserService(session)
         order_service = OrderService(session)
+        fragment_service = FragmentAccountService(session)
+
+        if not await fragment_service.get_all_active_accounts():
+            await callback.answer(
+                t("common.recipient.errors.service_unavailable", lang),
+                show_alert=True,
+            )
+            return
 
         # Блокируем строку пользователя для предотвращения race condition
         sender = await user_service.get_user_for_update(user.id)
@@ -653,22 +662,27 @@ async def callback_pay_balance(callback: CallbackQuery, state: FSMContext) -> No
         else:
             logger.warning(f"OrderWorker not available, order {order.id} will be recovered on restart")
 
+        order_text = (
+            f"{t('common.order.created_title', lang, order_key=order.order_key)}\n\n"
+            f"<blockquote>{t('common.order.recipient', lang, username=recipient_username)}\n"
+            f"{t('common.order.quantity_premium', lang, months=duration)}\n"
+            f"{t('common.order.price', lang, price=f'{price_usdt:,.2f}')}</blockquote>\n\n"
+            f"{t('common.order.processing', lang)}"
+        )
+        msg = None
         try:
-            msg = await callback.message.edit_text(
-                text=(
-                    f"{t('common.order.created_title', lang, order_key=order.order_key)}\n\n"
-                    f"<blockquote>{t('common.order.recipient', lang, username=recipient_username)}\n"
-                    f"{t('common.order.quantity_premium', lang, months=duration)}\n"
-                    f"{t('common.order.price', lang, price=f'{price_usdt:,.2f}')}</blockquote>\n\n"
-                    f"{t('common.order.processing', lang)}"
-                ),
-                parse_mode="HTML",
-            )
-            # Сохраняем message_id для редактирования при изменении статуса
-            order.message_id = msg.message_id
-            await session.commit()
+            msg = await callback.message.edit_text(text=order_text, parse_mode="HTML")
         except Exception as e:
             logger.debug(f"Failed to edit message: {e}")
+            try:
+                msg = await callback.message.edit_caption(caption=order_text, parse_mode="HTML")
+            except Exception as caption_error:
+                logger.debug(f"Failed to edit caption: {caption_error}")
+                msg = await callback.message.answer(text=order_text, parse_mode="HTML")
+
+        if msg:
+            order.message_id = msg.message_id
+            await session.commit()
 
     await state.clear()
     await callback.answer()

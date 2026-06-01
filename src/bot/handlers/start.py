@@ -368,7 +368,11 @@ async def _process_start(
             message,
             "main",
             text=f"{welcome_text}\n\n{get_legal_links_text(lang)}",
-            reply_markup=get_main_menu_keyboard(lang, bot_settings.get("news_channel_url")),
+            reply_markup=get_main_menu_keyboard(
+                lang,
+                bot_settings.get("news_channel_url"),
+                is_admin=db_user.is_admin,
+            ),
             disable_web_page_preview=True,
         )
 
@@ -841,7 +845,11 @@ async def callback_back_to_menu(callback: CallbackQuery, state: FSMContext) -> N
                 callback,
                 "main",
                 text=f"{welcome_text}\n\n{get_legal_links_text(lang)}",
-                reply_markup=get_main_menu_keyboard(lang, bot_settings.get("news_channel_url")),
+                reply_markup=get_main_menu_keyboard(
+                    lang,
+                    bot_settings.get("news_channel_url"),
+                    is_admin=db_user.is_admin,
+                ),
                 disable_web_page_preview=True,
             )
         except Exception as e:

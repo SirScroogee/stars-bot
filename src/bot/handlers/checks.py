@@ -6,11 +6,12 @@ import json
 import logging
 import secrets
 from decimal import Decimal
+from typing import Any, Awaitable, Callable
 
-from aiogram import F, Router, Bot
+from aiogram import BaseMiddleware, F, Router, Bot
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, TelegramObject
 
 from src.bot.keyboards.menu import MenuCallback
 from src.bot.keyboards.checks import (
@@ -54,6 +55,38 @@ logger = logging.getLogger(__name__)
 
 router = Router(name="checks")
 
+
+async def _is_checks_admin(user_id: int) -> bool:
+    """Проверить доступ к разделу чеков."""
+    async with async_session_factory() as session:
+        user_service = UserService(session)
+        db_user = await user_service.get_user(user_id)
+        return bool(db_user and db_user.is_admin)
+
+
+class ChecksAdminOnlyMiddleware(BaseMiddleware):
+    """Закрывает раздел чеков от обычных пользователей."""
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        user = data.get("event_from_user")
+        if user and await _is_checks_admin(user.id):
+            return await handler(event, data)
+
+        if isinstance(event, CallbackQuery):
+            await event.answer("Такого раздела не существует", show_alert=True)
+        elif isinstance(event, Message):
+            await event.answer("Такого раздела не существует")
+        return None
+
+
+router.callback_query.middleware(ChecksAdminOnlyMiddleware())
+router.message.middleware(ChecksAdminOnlyMiddleware())
+
 # Константы для звёзд
 MIN_CHECK_AMOUNT = 1  # Минимум звёзд за активацию
 MAX_CHECK_AMOUNT = 10000
@@ -72,6 +105,9 @@ async def calculate_max_activations(
 ) -> dict:
     """Рассчитать максимальное количество активаций для каждого типа баланса."""
     result = {"stars": 0, "usdt": 0, "premium": 0}
+
+    if amount_per_activation <= 0:
+        return result
 
     if content_type == "stars":
         # Для чека со звёздами

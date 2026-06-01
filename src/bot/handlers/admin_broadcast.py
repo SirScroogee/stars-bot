@@ -4,6 +4,7 @@ Handlers для рассылки сообщений пользователям.
 Поддерживает:
 - Текстовые сообщения с HTML-форматированием
 - Фото с подписью или без
+- Стикеры
 - Предпросмотр перед отправкой
 - Прогресс отправки с визуальным прогресс-баром
 - Подробная статистика после завершения
@@ -83,6 +84,7 @@ class BroadcastStates(StatesGroup):
     """Состояния для рассылки."""
     waiting_text = State()  # Ожидание текстового сообщения
     waiting_photo = State()  # Ожидание фото (с текстом или без)
+    waiting_sticker = State()  # Ожидание стикера
     confirm = State()  # Подтверждение рассылки
 
 
@@ -178,6 +180,15 @@ async def callback_broadcast_text(callback: CallbackQuery, state: FSMContext) ->
 async def message_broadcast_text(message: Message, state: FSMContext) -> None:
     """Получение текста для рассылки."""
     if not await _check_admin_message(message):
+        return
+
+    if not message.text:
+        await message.answer(
+            "❌ Пожалуйста, отправьте <b>текстовое сообщение</b>.\n\n"
+            "Если хотите отправить стикер или фото, вернитесь назад и выберите нужный тип рассылки.",
+            reply_markup=get_broadcast_cancel_keyboard(),
+            parse_mode="HTML",
+        )
         return
 
     # Сохраняем данные
@@ -299,6 +310,72 @@ async def message_broadcast_photo_invalid(message: Message) -> None:
     )
 
 
+# ==================== СТИКЕР РАССЫЛКА ====================
+
+
+@router.callback_query(F.data == AdminCallback.BROADCAST_STICKER)
+async def callback_broadcast_sticker(callback: CallbackQuery, state: FSMContext) -> None:
+    """Начало рассылки со стикером."""
+    if not await _check_admin(callback):
+        return
+
+    await state.set_state(BroadcastStates.waiting_sticker)
+
+    text = (
+        "🏷️ <b>Рассылка со стикером</b>\n\n"
+        "Отправьте стикер, который нужно разослать пользователям."
+    )
+
+    await callback.message.edit_text(
+        text=text,
+        reply_markup=get_broadcast_cancel_keyboard(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(BroadcastStates.waiting_sticker, F.sticker)
+async def message_broadcast_sticker(message: Message, state: FSMContext) -> None:
+    """Получение стикера для рассылки."""
+    if not await _check_admin_message(message):
+        return
+
+    await state.update_data(
+        broadcast_type="sticker",
+        sticker_id=message.sticker.file_id,
+    )
+    await state.set_state(BroadcastStates.confirm)
+
+    await message.answer(
+        "👁️ <b>Предпросмотр рассылки:</b>",
+        parse_mode="HTML",
+    )
+    await message.answer_sticker(sticker=message.sticker.file_id)
+
+    users_count = await _get_users_count()
+    await message.answer(
+        text=(
+            f"📊 <b>Информация о рассылке:</b>\n\n"
+            f"🏷️ Тип: Стикер\n"
+            f"👥 Получателей: <b>{users_count:,}</b>\n\n"
+            f"Подтвердите отправку рассылки:"
+        ),
+        reply_markup=get_broadcast_confirm_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+@router.message(BroadcastStates.waiting_sticker)
+async def message_broadcast_sticker_invalid(message: Message) -> None:
+    """Неверный формат - ожидаем стикер."""
+    await message.answer(
+        "❌ Пожалуйста, отправьте <b>стикер</b>.\n\n"
+        "Если хотите отправить текст или фото, вернитесь назад и выберите нужный тип рассылки.",
+        reply_markup=get_broadcast_cancel_keyboard(),
+        parse_mode="HTML",
+    )
+
+
 # ==================== ПОДТВЕРЖДЕНИЕ И ОТПРАВКА ====================
 
 
@@ -368,6 +445,11 @@ async def callback_broadcast_confirm(callback: CallbackQuery, state: FSMContext)
                     caption=data.get("caption"),
                     parse_mode="HTML",
                 )
+            elif broadcast_type == "sticker":
+                await bot.send_sticker(
+                    chat_id=user_id,
+                    sticker=data.get("sticker_id"),
+                )
             success += 1
         except Exception as e:
             error_msg = str(e).lower()
@@ -427,7 +509,12 @@ async def callback_broadcast_confirm(callback: CallbackQuery, state: FSMContext)
     delivery_rate = (success / total * 100) if total > 0 else 0
 
     # Тип рассылки для отображения
-    type_display = "📝 Текст" if broadcast_type == "text" else "🖼️ Фото"
+    type_display_map = {
+        "text": "📝 Текст",
+        "photo": "🖼️ Фото",
+        "sticker": "🏷️ Стикер",
+    }
+    type_display = type_display_map.get(broadcast_type, broadcast_type)
 
     # Финальное сообщение с подробной статистикой
     await callback.message.edit_text(
