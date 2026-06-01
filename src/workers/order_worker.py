@@ -506,6 +506,14 @@ class OrderWorker:
             logger.warning(f"Fragment account {account_id} marked as session_expired")
 
         if should_notify:
+            try:
+                from src.services.recipient_service import clear_client_cache, invalidate_account_cache
+
+                clear_client_cache(account_id)
+                invalidate_account_cache()
+            except Exception as cache_error:
+                logger.warning(f"Failed to clear Fragment recipient cache for account {account_id}: {cache_error}")
+
             await tg_logger.log_fragment_session_expired(
                 account_id=account_id,
                 account_name=account_name,

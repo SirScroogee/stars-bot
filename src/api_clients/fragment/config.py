@@ -21,6 +21,7 @@ class FragmentConfig:
     stel_token: str
     stel_ssid: str
     stel_ton_token: str
+    stel_dt: str = "-300"
 
     # ID аккаунта в БД (для обновления статистики)
     account_id: int | None = None
@@ -35,7 +36,11 @@ class FragmentConfig:
 
     # Fragment API
     fragment_url: str = "https://fragment.com/api"
-    user_agent: str = "Mozilla/5.0"
+    user_agent: str = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0.0.0 Safari/537.36"
+    )
 
     # ===== КЭШИРОВАНИЕ =====
     recipient_cache_ttl: int = 300  # 5 минут - TTL кэша получателей
@@ -58,13 +63,27 @@ class FragmentConfig:
             "stel_token": self.stel_token,
             "stel_ssid": self.stel_ssid,
             "stel_ton_token": self.stel_ton_token,
+            "stel_dt": self.stel_dt,
         }
 
     @property
     def headers(self) -> dict[str, str]:
         return {
             "User-Agent": self.user_agent,
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Accept-Encoding": "gzip, deflate",
+            "Accept-Language": "ru,en;q=0.9",
             "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://fragment.com",
+            "Referer": "https://fragment.com/stars/buy",
+            "Priority": "u=1, i",
+            "Sec-Ch-Ua": '"Chromium";v="148", "Microsoft Edge";v="148", "Not(A)Brand";v="99"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "X-Requested-With": "XMLHttpRequest",
         }
 
     @classmethod
@@ -77,6 +96,7 @@ class FragmentConfig:
             stel_token=account.stel_token,
             stel_ssid=account.stel_ssid,
             stel_ton_token=account.stel_ton_token,
+            stel_dt=account.stel_dt,
             account_id=account.id,
         )
 
@@ -114,6 +134,7 @@ class FragmentConfig:
         stel_ton_token = os.getenv("STEL_TON_TOKEN")
         if not stel_ton_token:
             raise ValueError("STEL_TON_TOKEN is required")
+        stel_dt = os.getenv("STEL_DT", "-300")
 
         return cls(
             tonapi_key=tonapi_key,
@@ -122,5 +143,6 @@ class FragmentConfig:
             stel_token=stel_token,
             stel_ssid=stel_ssid,
             stel_ton_token=stel_ton_token,
+            stel_dt=stel_dt,
             account_id=None,  # Нет связи с БД
         )

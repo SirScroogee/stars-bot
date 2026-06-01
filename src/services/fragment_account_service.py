@@ -29,6 +29,7 @@ class FragmentAccountData:
     stel_token: str
     stel_ssid: str
     stel_ton_token: str
+    stel_dt: str
     status: str
     is_active: bool
     priority: int
@@ -50,6 +51,7 @@ class FragmentAccountService:
         stel_token: str,
         stel_ssid: str,
         stel_ton_token: str,
+        stel_dt: str = "-300",
         wallet_address: Optional[str] = None,
         priority: int = 0,
     ) -> FragmentAccount:
@@ -82,6 +84,7 @@ class FragmentAccountService:
             stel_token=stel_token,
             stel_ssid=stel_ssid,
             stel_ton_token=stel_ton_token,
+            stel_dt=stel_dt,
             status=FragmentAccountStatus.ACTIVE.value,
             is_active=True,
             priority=priority,
@@ -121,6 +124,7 @@ class FragmentAccountService:
             stel_token=account.stel_token,
             stel_ssid=account.stel_ssid,
             stel_ton_token=account.stel_ton_token,
+            stel_dt=account.stel_dt or "-300",
             status=account.status,
             is_active=account.is_active,
             priority=account.priority,
@@ -176,6 +180,7 @@ class FragmentAccountService:
             stel_token=account.stel_token,
             stel_ssid=account.stel_ssid,
             stel_ton_token=account.stel_ton_token,
+            stel_dt=account.stel_dt or "-300",
             status=account.status,
             is_active=account.is_active,
             priority=account.priority,
@@ -217,6 +222,7 @@ class FragmentAccountService:
         stel_token: Optional[str] = None,
         stel_ssid: Optional[str] = None,
         stel_ton_token: Optional[str] = None,
+        stel_dt: Optional[str] = None,
         wallet_address: Optional[str] = None,
         priority: Optional[int] = None,
         is_active: Optional[bool] = None,
@@ -246,6 +252,8 @@ class FragmentAccountService:
             account.stel_ssid = stel_ssid
         if stel_ton_token is not None:
             account.stel_ton_token = stel_ton_token
+        if stel_dt is not None:
+            account.stel_dt = stel_dt
         if wallet_address is not None:
             account.wallet_address = wallet_address
         if priority is not None:
@@ -264,6 +272,7 @@ class FragmentAccountService:
         stel_token: str,
         stel_ssid: str,
         stel_ton_token: str,
+        stel_dt: str = "-300",
     ) -> bool:
         """
         Обновить только сессионные токены аккаунта.
@@ -277,7 +286,9 @@ class FragmentAccountService:
         account.stel_token = stel_token
         account.stel_ssid = stel_ssid
         account.stel_ton_token = stel_ton_token
+        account.stel_dt = stel_dt
         account.status = FragmentAccountStatus.ACTIVE.value
+        account.is_active = True
         account.error_message = None
         account.last_session_check = datetime.utcnow()
         account.updated_at = datetime.utcnow()

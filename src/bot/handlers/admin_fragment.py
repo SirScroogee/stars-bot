@@ -1,7 +1,8 @@
-"""
+﻿"""
 Handlers для управления Fragment аккаунтами в админ-панели.
 """
 import asyncio
+import html
 import logging
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -13,7 +14,11 @@ from aiogram.types import CallbackQuery, Message
 
 from src.api_clients.fragment import FragmentClient
 from src.api_clients.fragment.config import FragmentConfig
-from src.api_clients.fragment.exceptions import SessionExpiredError, FragmentAPIError
+from src.api_clients.fragment.exceptions import (
+    FragmentAPIError,
+    RecipientNotFoundError,
+    SessionExpiredError,
+)
 from src.bot.handlers.admin_utils import check_admin
 from src.bot.keyboards.admin import (
     AdminCallback,
@@ -40,6 +45,7 @@ router = Router(name="admin_fragment")
 
 # Кэширование: не проверять аккаунт если прошло меньше этого времени
 CACHE_TTL = timedelta(minutes=5)
+PREFLIGHT_STARS_QUANTITY = 50
 
 
 class FragmentStates(StatesGroup):
@@ -51,6 +57,7 @@ class FragmentStates(StatesGroup):
     add_fragment_hash = State()
     add_stel_token = State()
     add_stel_ssid = State()
+    add_stel_dt = State()
     add_stel_ton_token = State()
     add_confirm = State()
 
@@ -60,6 +67,7 @@ class FragmentStates(StatesGroup):
     # Обновление сессии
     session_stel_token = State()
     session_stel_ssid = State()
+    session_stel_dt = State()
     session_stel_ton_token = State()
 
 
@@ -658,6 +666,35 @@ async def message_session_stel_ssid(message: Message, state: FSMContext) -> None
         pass
 
     await state.update_data(stel_ssid=message.text.strip())
+    await state.set_state(FragmentStates.session_stel_dt)
+
+    await message.bot.edit_message_text(
+        chat_id=bot_chat_id,
+        message_id=bot_message_id,
+        text=(
+            "🔑 <b>Обновление сессии Fragment</b>\n\n"
+            "Введите <b>STEL_DT</b>:\n\n"
+            "<i>Это значение cookie stel_dt из браузера. Обычно: -300</i>"
+        ),
+        reply_markup=get_fragment_cancel_keyboard(account_id, "view"),
+        parse_mode="HTML",
+    )
+
+
+@router.message(FragmentStates.session_stel_dt)
+async def message_session_stel_dt(message: Message, state: FSMContext) -> None:
+    """Получение STEL_DT."""
+    data = await state.get_data()
+    bot_message_id = data.get("bot_message_id")
+    bot_chat_id = data.get("bot_chat_id")
+    account_id = data.get("session_account_id")
+
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+    await state.update_data(stel_dt=message.text.strip() or "-300")
     await state.set_state(FragmentStates.session_stel_ton_token)
 
     await message.bot.edit_message_text(
@@ -682,6 +719,7 @@ async def message_session_stel_ton_token(message: Message, state: FSMContext) ->
     account_id = data.get("session_account_id")
     stel_token = data.get("stel_token")
     stel_ssid = data.get("stel_ssid")
+    stel_dt = data.get("stel_dt", "-300")
     stel_ton_token = message.text.strip()
 
     try:
@@ -692,6 +730,19 @@ async def message_session_stel_ton_token(message: Message, state: FSMContext) ->
     if not account_id:
         await state.clear()
         return
+    preflight_username = message.from_user.username
+    if not preflight_username:
+        await message.bot.edit_message_text(
+            chat_id=bot_chat_id,
+            message_id=bot_message_id,
+            text=(
+                "❌ <b>Не удалось проверить сессию</b>\n\n"
+                "Для проверки cookies/hash у админа должен быть Telegram username."
+            ),
+            reply_markup=get_fragment_cancel_keyboard(account_id, "view"),
+            parse_mode="HTML",
+        )
+        return
 
     async with async_session_factory() as session:
         service = FragmentAccountService(session)
@@ -700,6 +751,7 @@ async def message_session_stel_ton_token(message: Message, state: FSMContext) ->
             stel_token=stel_token,
             stel_ssid=stel_ssid,
             stel_ton_token=stel_ton_token,
+            stel_dt=stel_dt,
         )
         await session.commit()
 
@@ -707,10 +759,22 @@ async def message_session_stel_ton_token(message: Message, state: FSMContext) ->
 
     await state.clear()
 
-    # Пересоздаём воркер (аккаунт мог стать активным)
-    await trigger_reconfigure()
+    check_result = {"success": False, "error": "Аккаунт не найден"}
+    if success:
+        check_result = await _check_single_account(account_id, preflight_username=preflight_username)
+        if check_result.get("success"):
+            # Пересоздаём воркер только после успешной проверки cookies/hash.
+            await trigger_reconfigure()
+        else:
+            async with async_session_factory() as check_session:
+                check_service = FragmentAccountService(check_session)
+                await check_service.mark_session_expired(
+                    account_id,
+                    check_result.get("error") or "Fragment preflight failed",
+                )
+                await check_session.commit()
 
-    if success and account:
+    if success and account and check_result.get("success"):
         await message.bot.edit_message_text(
             chat_id=bot_chat_id,
             message_id=bot_message_id,
@@ -728,8 +792,12 @@ async def message_session_stel_ton_token(message: Message, state: FSMContext) ->
         await message.bot.edit_message_text(
             chat_id=bot_chat_id,
             message_id=bot_message_id,
-            text="❌ Ошибка обновления сессии",
-            reply_markup=get_fragment_menu_keyboard(),
+            text=(
+                "❌ <b>Сессия сохранена, но проверка не пройдена</b>\n\n"
+                f"<blockquote>{html.escape(str(check_result.get('error') or 'Неизвестная ошибка'))}</blockquote>"
+            ),
+            reply_markup=get_fragment_detail_keyboard(account_id, False),
+            parse_mode="HTML",
         )
 
 
@@ -747,7 +815,7 @@ async def callback_fragment_add(callback: CallbackQuery, state: FSMContext) -> N
 
     text = (
         "➕ <b>Добавление Fragment аккаунта</b>\n\n"
-        "<b>Шаг 1/7:</b> Введите <b>имя</b> аккаунта:\n\n"
+        "<b>Шаг 1/8:</b> Введите <b>имя</b> аккаунта:\n\n"
         "<i>Это понятное название для вас, например: «Основной кошелёк» или «Резервный»</i>"
     )
 
@@ -790,7 +858,7 @@ async def message_add_name(message: Message, state: FSMContext) -> None:
         message_id=bot_message_id,
         text=(
             "➕ <b>Добавление Fragment аккаунта</b>\n\n"
-            "<b>Шаг 2/7:</b> Введите <b>TONAPI Key</b>:\n\n"
+            "<b>Шаг 2/8:</b> Введите <b>TONAPI Key</b>:\n\n"
             "<i>Получите ключ на https://tonconsole.com → API Keys</i>"
         ),
         reply_markup=get_fragment_cancel_keyboard(),
@@ -819,7 +887,7 @@ async def message_add_tonapi_key(message: Message, state: FSMContext) -> None:
         message_id=bot_message_id,
         text=(
             "➕ <b>Добавление Fragment аккаунта</b>\n\n"
-            "<b>Шаг 3/7:</b> Введите <b>мнемонику</b> кошелька:\n\n"
+            "<b>Шаг 3/8:</b> Введите <b>мнемонику</b> кошелька:\n\n"
             "<i>24 слова через пробел. Это секретная фраза восстановления кошелька TON.</i>"
         ),
         reply_markup=get_fragment_cancel_keyboard(),
@@ -859,7 +927,7 @@ async def message_add_mnemonic(message: Message, state: FSMContext) -> None:
         message_id=bot_message_id,
         text=(
             "➕ <b>Добавление Fragment аккаунта</b>\n\n"
-            "<b>Шаг 4/7:</b> Введите <b>Fragment Hash</b>:\n\n"
+            "<b>Шаг 4/8:</b> Введите <b>Fragment Hash</b>:\n\n"
             "<i>После авторизации на fragment.com в URL будет параметр hash=XXX. "
             "Скопируйте значение XXX.</i>"
         ),
@@ -889,7 +957,7 @@ async def message_add_fragment_hash(message: Message, state: FSMContext) -> None
         message_id=bot_message_id,
         text=(
             "➕ <b>Добавление Fragment аккаунта</b>\n\n"
-            "<b>Шаг 5/7:</b> Введите <b>STEL_TOKEN</b>:\n\n"
+            "<b>Шаг 5/8:</b> Введите <b>STEL_TOKEN</b>:\n\n"
             "<i>Откройте DevTools (F12) → Application → Cookies → fragment.com\n"
             "Скопируйте значение cookie «stel_token»</i>"
         ),
@@ -919,7 +987,7 @@ async def message_add_stel_token(message: Message, state: FSMContext) -> None:
         message_id=bot_message_id,
         text=(
             "➕ <b>Добавление Fragment аккаунта</b>\n\n"
-            "<b>Шаг 6/7:</b> Введите <b>STEL_SSID</b>:\n\n"
+            "<b>Шаг 6/8:</b> Введите <b>STEL_SSID</b>:\n\n"
             "<i>Скопируйте значение cookie «stel_ssid» из того же места</i>"
         ),
         reply_markup=get_fragment_cancel_keyboard(),
@@ -941,6 +1009,34 @@ async def message_add_stel_ssid(message: Message, state: FSMContext) -> None:
         pass
 
     await state.update_data(add_stel_ssid=message.text.strip())
+    await state.set_state(FragmentStates.add_stel_dt)
+
+    await message.bot.edit_message_text(
+        chat_id=bot_chat_id,
+        message_id=bot_message_id,
+        text=(
+            "➕ <b>Добавление Fragment аккаунта</b>\n\n"
+            "<b>Шаг 7/8:</b> Введите <b>STEL_DT</b>:\n\n"
+            "<i>Скопируйте значение cookie «stel_dt». Обычно: -300</i>"
+        ),
+        reply_markup=get_fragment_cancel_keyboard(),
+        parse_mode="HTML",
+    )
+
+
+@router.message(FragmentStates.add_stel_dt)
+async def message_add_stel_dt(message: Message, state: FSMContext) -> None:
+    """Получение STEL_DT."""
+    data = await state.get_data()
+    bot_message_id = data.get("bot_message_id")
+    bot_chat_id = data.get("bot_chat_id")
+
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+    await state.update_data(add_stel_dt=message.text.strip() or "-300")
     await state.set_state(FragmentStates.add_stel_ton_token)
 
     await message.bot.edit_message_text(
@@ -948,7 +1044,7 @@ async def message_add_stel_ssid(message: Message, state: FSMContext) -> None:
         message_id=bot_message_id,
         text=(
             "➕ <b>Добавление Fragment аккаунта</b>\n\n"
-            "<b>Шаг 7/7:</b> Введите <b>STEL_TON_TOKEN</b>:\n\n"
+            "<b>Шаг 8/8:</b> Введите <b>STEL_TON_TOKEN</b>:\n\n"
             "<i>Скопируйте значение cookie «stel_ton_token»</i>"
         ),
         reply_markup=get_fragment_cancel_keyboard(),
@@ -1002,6 +1098,13 @@ async def callback_fragment_confirm(callback: CallbackQuery, state: FSMContext) 
         return
 
     data = await state.get_data()
+    preflight_username = callback.from_user.username
+    if not preflight_username:
+        await callback.answer(
+            "❌ Для проверки cookies/hash у админа должен быть Telegram username.",
+            show_alert=True,
+        )
+        return
 
     async with async_session_factory() as session:
         service = FragmentAccountService(session)
@@ -1015,13 +1118,24 @@ async def callback_fragment_confirm(callback: CallbackQuery, state: FSMContext) 
                 stel_token=data.get("add_stel_token"),
                 stel_ssid=data.get("add_stel_ssid"),
                 stel_ton_token=data.get("add_stel_ton_token"),
+                stel_dt=data.get("add_stel_dt", "-300"),
             )
             await session.commit()
 
-            # Пересоздаём воркер (добавлен новый аккаунт)
-            await trigger_reconfigure()
-
-            await callback.answer("✅ Аккаунт добавлен!", show_alert=True)
+            check_result = await _check_single_account(account.id, preflight_username=preflight_username)
+            if check_result.get("success"):
+                # Пересоздаём воркер только после успешной проверки cookies/hash.
+                await trigger_reconfigure()
+                await callback.answer("✅ Аккаунт добавлен и проверен!", show_alert=True)
+            else:
+                async with async_session_factory() as check_session:
+                    check_service = FragmentAccountService(check_session)
+                    await check_service.mark_session_expired(
+                        account.id,
+                        check_result.get("error") or "Fragment preflight failed",
+                    )
+                    await check_session.commit()
+                await callback.answer("⚠️ Аккаунт сохранён, но проверка не пройдена", show_alert=True)
             logger.info(f"Fragment account created: {account.id} by admin {callback.from_user.id}")
 
         except Exception as e:
@@ -1033,14 +1147,23 @@ async def callback_fragment_confirm(callback: CallbackQuery, state: FSMContext) 
     await state.clear()
 
     # Показываем созданный аккаунт
+    status_text = "✅ Активен" if check_result.get("success") else "🔴 Не активен"
+    error_text = ""
+    if not check_result.get("success"):
+        error_text = (
+            "\n\n<b>Ошибка проверки:</b>\n"
+            f"<blockquote>{html.escape(str(check_result.get('error') or 'Неизвестная ошибка'))}</blockquote>"
+        )
+
     await callback.message.edit_text(
         text=(
             f"✅ <b>Аккаунт создан!</b>\n\n"
             f"<b>Имя:</b> {account.name}\n"
             f"<b>ID:</b> {account.id}\n"
-            f"<b>Статус:</b> ✅ Активен"
+            f"<b>Статус:</b> {status_text}"
+            f"{error_text}"
         ),
-        reply_markup=get_fragment_detail_keyboard(account.id, True),
+        reply_markup=get_fragment_detail_keyboard(account.id, bool(check_result.get("success"))),
         parse_mode="HTML",
     )
 
@@ -1070,7 +1193,19 @@ async def callback_fragment_cancel(callback: CallbackQuery, state: FSMContext) -
 # ==================== ПРОВЕРКА АККАУНТА (внутренняя) ====================
 
 
-async def _check_single_account(account_id: int) -> dict:
+def _format_fragment_auth_error(error: Exception) -> str:
+    """Понятное описание ошибки cookies/hash Fragment."""
+    if isinstance(error, SessionExpiredError):
+        method = getattr(error, "method", "unknown")
+        return (
+            "Куки или hash не подходят для покупки Stars. "
+            f"Fragment вернул Access denied на методе {method}. "
+            "Обновите fragment_hash и cookies из одной свежей browser-сессии."
+        )
+    return str(error)
+
+
+async def _check_single_account(account_id: int, preflight_username: str | None = None) -> dict:
     """
     Проверить один аккаунт Fragment.
 
@@ -1120,15 +1255,29 @@ async def _check_single_account(account_id: int) -> dict:
                 logger.warning(f"Account {account_id}: wallet check failed: {e}")
                 result["error"] = f"Ошибка кошелька: {str(e)[:50]}"
 
-            # 2. Проверяем сессию Fragment (тестовый поиск)
+            # 2. Проверяем сессию Fragment.
+            # Если есть username админа, делаем сильную проверку через initBuyStarsRequest
+            # без оплаты. Поиск получателя сам по себе не гарантирует валидность cookies/hash.
             try:
-                # Пробуем найти тестового пользователя (durov всегда существует)
-                await client.search_stars_recipient("durov", use_cache=False)
+                if preflight_username:
+                    await client.preflight_stars_purchase(
+                        preflight_username,
+                        quantity=PREFLIGHT_STARS_QUANTITY,
+                    )
+                else:
+                    await client.search_stars_recipient("telegram", use_cache=False)
                 result["session_valid"] = True
-            except SessionExpiredError:
-                logger.warning(f"Account {account_id}: session expired")
-                result["error"] = "Сессия истекла"
-                await service.mark_session_expired(account_id, "Session check failed")
+            except SessionExpiredError as e:
+                error = _format_fragment_auth_error(e)
+                logger.warning(f"Account {account_id}: {error}")
+                result["error"] = error
+                await service.mark_session_expired(account_id, error)
+            except RecipientNotFoundError as e:
+                logger.warning(f"Account {account_id}: preflight recipient failed: {e}")
+                result["error"] = (
+                    f"Тестовый username @{preflight_username or 'telegram'} не подходит "
+                    "для проверки Stars. Укажите аккаунт Telegram с username, который может получать Stars."
+                )
             except Exception as e:
                 logger.warning(f"Account {account_id}: session check failed: {e}")
                 # Не помечаем как истёкшую, может быть временная ошибка
@@ -1210,4 +1359,3 @@ async def _auto_refresh_all_accounts() -> int:
             await asyncio.sleep(0.3)
 
     return refreshed
-

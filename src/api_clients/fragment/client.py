@@ -300,7 +300,8 @@ class FragmentClient:
                     error = raw.get("error")
                     if error:
                         logger.error(f"Fragment API error: {error} (method: {method})")
-                        if error in ("Access denied", "Session expired"):
+                        error_lower = str(error).lower()
+                        if "access denied" in error_lower or "session expired" in error_lower:
                             raise SessionExpiredError(method)
                         raise FragmentAPIError(f"Fragment API error: {error}", method, raw)
 
@@ -500,6 +501,20 @@ class FragmentClient:
                 self._invalidate_cache_by_recipient_id(recipient_id)
                 logger.warning(f"Invalidated cache due to recipient error: {e}")
             raise
+
+    async def preflight_stars_purchase(
+        self,
+        username: str,
+        quantity: int = 50,
+    ) -> FragmentRequest:
+        """
+        Проверить, что cookies/hash подходят для старта покупки Stars.
+
+        Метод выполняет поиск получателя и initBuyStarsRequest, но не получает
+        платежную ссылку и не отправляет TON-транзакцию.
+        """
+        recipient = await self.search_stars_recipient(username, use_cache=False)
+        return await self.init_stars_request(recipient.recipient_id, quantity)
 
     async def execute_stars_payment(
         self, req_id: str, show_sender: bool = False
