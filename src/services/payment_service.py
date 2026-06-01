@@ -17,6 +17,8 @@ from enum import Enum
 
 from src.api_clients.fragment import (
     FragmentClient,
+    FragmentAccessDeniedError,
+    FragmentWalletLinkRequiredError,
     FragmentError,
     InsufficientFundsError,
     RecipientNotFoundError,
@@ -36,6 +38,7 @@ class PaymentErrorType(Enum):
     RECIPIENT_NOT_FOUND = "recipient_not_found"
     INSUFFICIENT_FUNDS = "insufficient_funds"
     SESSION_EXPIRED = "session_expired"
+    ACCESS_DENIED = "access_denied"
     TRANSACTION_FAILED = "transaction_failed"
     TRANSACTION_TIMEOUT = "transaction_timeout"
     UNKNOWN_ERROR = "unknown_error"
@@ -144,6 +147,28 @@ class PaymentService:
                 should_retry=False,  # Требуется ручное обновление сессии
             )
 
+        except FragmentAccessDeniedError as e:
+            logger.error(f"Fragment access denied: {e.method}")
+            error_message = (
+                f"Fragment access denied on {e.method}. "
+                "Check Fragment cookies/account status/IP or update session tokens."
+            )
+            return PaymentResult(
+                success=False,
+                error_type=PaymentErrorType.ACCESS_DENIED,
+                error_message=error_message,
+                should_retry=False,
+            )
+
+        except FragmentWalletLinkRequiredError as e:
+            logger.error(f"Fragment wallet link required: {e.method}")
+            return PaymentResult(
+                success=False,
+                error_type=PaymentErrorType.ACCESS_DENIED,
+                error_message=str(e),
+                should_retry=False,
+            )
+
         except TransactionTimeoutError as e:
             logger.error(f"Transaction timeout: {e.timeout_seconds}s")
             return PaymentResult(
@@ -245,6 +270,28 @@ class PaymentService:
             return PaymentResult(
                 success=False,
                 error_type=PaymentErrorType.SESSION_EXPIRED,
+                error_message=str(e),
+                should_retry=False,
+            )
+
+        except FragmentAccessDeniedError as e:
+            logger.error(f"Fragment access denied: {e.method}")
+            error_message = (
+                f"Fragment access denied on {e.method}. "
+                "Check Fragment cookies/account status/IP or update session tokens."
+            )
+            return PaymentResult(
+                success=False,
+                error_type=PaymentErrorType.ACCESS_DENIED,
+                error_message=error_message,
+                should_retry=False,
+            )
+
+        except FragmentWalletLinkRequiredError as e:
+            logger.error(f"Fragment wallet link required: {e.method}")
+            return PaymentResult(
+                success=False,
+                error_type=PaymentErrorType.ACCESS_DENIED,
                 error_message=str(e),
                 should_retry=False,
             )

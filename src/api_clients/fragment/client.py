@@ -22,8 +22,10 @@ import base64
 import json
 import logging
 import random
+import re
 import time
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 import aiohttp
@@ -35,6 +37,8 @@ from tonutils.wallet import WalletV4R2
 from src.api_clients.fragment.config import FragmentConfig
 from src.api_clients.fragment.exceptions import (
     FragmentAPIError,
+    FragmentAccessDeniedError,
+    FragmentWalletLinkRequiredError,
     InsufficientFundsError,
     RateLimitError,
     RecipientNotFoundError,
@@ -44,6 +48,9 @@ from src.api_clients.fragment.exceptions import (
 )
 
 logger = logging.getLogger(__name__)
+
+USDT_TON_MASTER_ADDRESS = "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs"
+MIN_TON_FOR_USDT_GAS = Decimal("0.10")
 
 
 @dataclass
@@ -178,6 +185,7 @@ class FragmentClient:
         self._wallet: WalletV4R2 | None = None
         self._public_key: bytes | None = None
         self._address: str | None = None
+        self._raw_address: str | None = None
         self._session: aiohttp.ClientSession | None = None
         self._connector: TCPConnector | None = None
         self._initialized = False
@@ -214,6 +222,7 @@ class FragmentClient:
             self._wallet = wallet
             self._public_key = public_key
             self._address = wallet.address.to_str()
+            self._raw_address = wallet.address.to_str(False, False)
             self._initialized = True
 
             logger.info(f"FragmentClient initialized. Wallet: {self._address}")
@@ -249,7 +258,12 @@ class FragmentClient:
         jitter = random.uniform(0, base_delay * self._config.retry_jitter_factor)
         return base_delay + jitter
 
-    async def _call_api(self, data: dict[str, Any], method: str) -> dict[str, Any]:
+    async def _call_api(
+        self,
+        data: dict[str, Any],
+        method: str,
+        page_url: str | None = None,
+    ) -> dict[str, Any]:
         """
         Выполнить запрос к Fragment API с retry, circuit breaker и jitter.
 
@@ -273,21 +287,90 @@ class FragmentClient:
 
         # Выполняем с circuit breaker
         return await self._circuit_breaker.call(
-            self._call_api_impl(data, method)
+            self._call_api_impl(data, method, page_url or self._config.stars_page_url)
         )
 
-    async def _call_api_impl(self, data: dict[str, Any], method: str) -> dict[str, Any]:
+    async def _get_fragment_hash(
+        self,
+        session: aiohttp.ClientSession,
+        page_url: str,
+    ) -> str:
+        """Получить актуальный API hash со страницы Fragment."""
+        page_headers = {
+            key: value
+            for key, value in self._config.headers.items()
+            if key.lower() not in {
+                "accept",
+                "accept-encoding",
+                "content-type",
+                "x-requested-with",
+                "x-aj-referer",
+            }
+        }
+        page_headers.update(
+            {
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Referer": f"{self._config.fragment_base_url}/",
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Upgrade-Insecure-Requests": "1",
+            }
+        )
+
+        async with session.get(page_url, headers=page_headers) as resp:
+            if resp.status != 200:
+                raise FragmentAPIError(
+                    f"Failed to load Fragment page for API hash: HTTP {resp.status}",
+                    "getFragmentHash",
+                    {"status": resp.status, "page_url": page_url},
+                )
+            html = await resp.text()
+
+        hash_patterns = [
+            r"(?:https://fragment\.com)?/api\?hash=([a-zA-Z0-9_-]+)",
+            r"[?&]hash=([a-zA-Z0-9_-]+)",
+            r"apiHash[\"']?\s*[:=]\s*[\"']([a-zA-Z0-9_-]+)[\"']",
+            r"hash[\"']?\s*[:=]\s*[\"']([a-zA-Z0-9_-]+)[\"']",
+        ]
+        match = None
+        for pattern in hash_patterns:
+            match = re.search(pattern, html)
+            if match:
+                break
+        if not match:
+            if self._config.fragment_hash:
+                logger.warning("Could not extract fresh Fragment hash, using stored fallback hash")
+                return self._config.fragment_hash
+            raise FragmentAPIError(
+                "Could not extract Fragment API hash from page",
+                "getFragmentHash",
+                {"page_url": page_url},
+            )
+        return match.group(1)
+
+    async def _call_api_impl(
+        self,
+        data: dict[str, Any],
+        method: str,
+        page_url: str,
+    ) -> dict[str, Any]:
         """Внутренняя реализация API вызова с retry и jitter."""
-        url = f"{self._config.fragment_url}?hash={self._config.fragment_hash}"
         last_error: Exception | None = None
 
         for attempt in range(self._config.max_retries):
             try:
                 session = await self._get_session()
+                fragment_hash = await self._get_fragment_hash(session, page_url)
+                url = f"{self._config.fragment_url}?hash={fragment_hash}"
+                headers = {
+                    **self._config.headers,
+                    "Referer": page_url,
+                    "X-Aj-Referer": page_url,
+                }
 
                 logger.debug(f"Fragment API call: {method} (attempt {attempt + 1})")
 
-                async with session.post(url, data=data) as resp:
+                async with session.post(url, data=data, headers=headers) as resp:
                     if resp.status == 429:
                         retry_after = int(resp.headers.get("Retry-After", 60))
                         self._rate_limit_reset_at = time.time() + retry_after
@@ -298,11 +381,24 @@ class FragmentClient:
                     # Не логируем raw response — может содержать чувствительные данные
 
                     error = raw.get("error")
+                    if raw.get("need_verify") and "link wallet" in str(raw.get("popup", "")).lower():
+                        raise FragmentWalletLinkRequiredError(method, raw)
                     if error:
-                        logger.error(f"Fragment API error: {error} (method: {method})")
+                        error_context = {
+                            "need_verify": raw.get("need_verify"),
+                            "has_popup": bool(raw.get("popup")),
+                        }
+                        logger.error(
+                            "Fragment API error: %s (method: %s, context: %s)",
+                            error,
+                            method,
+                            error_context,
+                        )
                         error_lower = str(error).lower()
-                        if "access denied" in error_lower or "session expired" in error_lower:
+                        if "session expired" in error_lower:
                             raise SessionExpiredError(method)
+                        if "access denied" in error_lower:
+                            raise FragmentAccessDeniedError(method, raw)
                         raise FragmentAPIError(f"Fragment API error: {error}", method, raw)
 
                     logger.debug(f"Fragment API response: {method} -> OK")
@@ -379,6 +475,39 @@ class FragmentClient:
         logger.debug(f"Wallet balance: {balance} TON")
         return balance
 
+    async def get_usdt_balance(self, wallet_address: str | None = None) -> Decimal:
+        """Get USDT jetton balance in TON network via TonAPI."""
+        await self._ensure_initialized()
+        address = wallet_address or self._address
+        url = f"https://tonapi.io/v2/accounts/{address}/jettons"
+        headers = {"Authorization": f"Bearer {self._config.tonapi_key}"}
+
+        timeout = ClientTimeout(total=self._config.request_timeout)
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            async with session.get(url) as resp:
+                if resp.status == 404:
+                    return Decimal("0")
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise FragmentAPIError(
+                        f"Failed to load USDT balance: HTTP {resp.status}",
+                        "getUsdtBalance",
+                        {"status": resp.status, "response": text[:200]},
+                    )
+                data = await resp.json()
+
+        balances = data.get("balances", []) if isinstance(data, dict) else []
+        for item in balances:
+            jetton = item.get("jetton", {}) or {}
+            jetton_address = str(jetton.get("address") or "")
+            symbol = str(jetton.get("symbol") or "").upper()
+            if jetton_address == USDT_TON_MASTER_ADDRESS or symbol in {"USD\u20ae", "USDT"}:
+                raw_balance = Decimal(str(item.get("balance") or "0"))
+                decimals = int(jetton.get("decimals") or 6)
+                return raw_balance / (Decimal(10) ** decimals)
+
+        return Decimal("0")
+
     async def get_wallet_address(self) -> str:
         """Получить адрес TON-кошелька."""
         await self._ensure_initialized()
@@ -444,8 +573,9 @@ class FragmentClient:
                 return cached
 
         result = await self._call_api(
-            {"query": username, "quantity": "1", "method": "searchStarsRecipient"},
+            {"query": username, "quantity": "", "method": "searchStarsRecipient"},
             "searchStarsRecipient",
+            page_url=self._config.stars_page_url,
         )
 
         found = result.get("found", {})
@@ -465,6 +595,50 @@ class FragmentClient:
 
         return recipient
 
+    def _payment_method(self) -> str:
+        method = (self._config.payment_method or "ton").strip().lower()
+        if method not in {"ton", "usdt_ton"}:
+            logger.warning("Unsupported Fragment payment method %s, falling back to ton", method)
+            return "ton"
+        return method
+
+    @staticmethod
+    def _required_usdt_amount(raw_amount: Any) -> Decimal:
+        amount = Decimal(str(raw_amount or "0"))
+        if amount > 0 and amount < Decimal("0.01"):
+            return amount * Decimal("1000")
+        return amount
+
+    async def _check_payment_balance(self, required_amount: Decimal | None = None) -> None:
+        payment_method = self._payment_method()
+        ton_balance = Decimal(str(await self.get_balance()))
+
+        if payment_method == "ton":
+            if required_amount and ton_balance < required_amount:
+                raise InsufficientFundsError(
+                    required=float(required_amount),
+                    available=float(ton_balance),
+                    currency="TON",
+                )
+            return
+
+        if ton_balance < MIN_TON_FOR_USDT_GAS:
+            raise InsufficientFundsError(
+                required=float(MIN_TON_FOR_USDT_GAS),
+                available=float(ton_balance),
+                currency="TON",
+            )
+
+        required_usdt = required_amount or Decimal("0")
+        if required_usdt > 0:
+            usdt_balance = await self.get_usdt_balance()
+            if usdt_balance < required_usdt:
+                raise InsufficientFundsError(
+                    required=float(required_usdt),
+                    available=float(usdt_balance),
+                    currency="USDT",
+                )
+
     async def init_stars_request(
         self, recipient_id: str, quantity: int
     ) -> FragmentRequest:
@@ -480,18 +654,37 @@ class FragmentClient:
         """
         try:
             await self._call_api(
-                {"stars": "", "quantity": str(quantity), "method": "updateStarsPrices"},
-                "updateStarsPrices",
+                {
+                    "mode": "new",
+                    "lv": "false",
+                    "dh": str(int(time.time())),
+                    "method": "updateStarsBuyState",
+                },
+                "updateStarsBuyState",
+                page_url=self._config.stars_page_url,
             )
 
             result = await self._call_api(
-                {"recipient": recipient_id, "quantity": str(quantity), "method": "initBuyStarsRequest"},
+                {
+                    "recipient": recipient_id,
+                    "quantity": str(quantity),
+                    "payment_method": self._payment_method(),
+                    "method": "initBuyStarsRequest",
+                },
                 "initBuyStarsRequest",
+                page_url=self._config.stars_page_url,
             )
+            required_amount = (
+                self._required_usdt_amount(result.get("amount"))
+                if self._payment_method() == "usdt_ton"
+                else Decimal(str(result.get("amount") or "0"))
+            )
+            await self._check_payment_balance(required_amount)
 
             return FragmentRequest(
                 req_id=result["req_id"],
                 recipient=FragmentRecipient(recipient_id=recipient_id, username=""),
+                amount=float(required_amount) if required_amount > 0 else None,
             )
 
         except FragmentAPIError as e:
@@ -508,7 +701,7 @@ class FragmentClient:
         quantity: int = 50,
     ) -> FragmentRequest:
         """
-        Проверить, что cookies/hash подходят для старта покупки Stars.
+        Проверить, что cookies подходят для старта покупки Stars.
 
         Метод выполняет поиск получателя и initBuyStarsRequest, но не получает
         платежную ссылку и не отправляет TON-транзакцию.
@@ -535,17 +728,27 @@ class FragmentClient:
         """
         await self._ensure_initialized()
 
+        data = {
+            "transaction": 1,
+            "id": req_id,
+            "show_sender": 1 if show_sender else 0,
+            "method": "getBuyStarsLink",
+        }
+        if self._payment_method() == "ton":
+            data.update(
+                {
+                    "account": json.dumps(self._get_account_data()),
+                    "device": json.dumps(self._config.tonkeeper_device),
+                }
+            )
+
         link_data = await self._call_api(
-            {
-                "account": json.dumps(self._get_account_data()),
-                "device": json.dumps({"platform": "python"}),
-                "transaction": "1",
-                "id": req_id,
-                "show_sender": "1" if show_sender else "0",
-                "method": "getBuyStarsLink",
-            },
+            data,
             "getBuyStarsLink",
+            page_url=self._config.stars_page_url,
         )
+        if link_data.get("need_verify"):
+            raise FragmentAccessDeniedError("getBuyStarsLink", link_data)
 
         return await self._execute_transactions(link_data)
 
@@ -580,6 +783,7 @@ class FragmentClient:
         result = await self._call_api(
             {"query": username, "method": "searchPremiumGiftRecipient"},
             "searchPremiumGiftRecipient",
+            page_url=self._config.premium_page_url,
         )
 
         found = result.get("found", {})
@@ -614,13 +818,26 @@ class FragmentClient:
         """
         try:
             result = await self._call_api(
-                {"recipient": recipient_id, "months": str(months), "method": "initGiftPremiumRequest"},
+                {
+                    "recipient": recipient_id,
+                    "months": str(months),
+                    "payment_method": self._payment_method(),
+                    "method": "initGiftPremiumRequest",
+                },
                 "initGiftPremiumRequest",
+                page_url=self._config.premium_page_url,
             )
+            required_amount = (
+                self._required_usdt_amount(result.get("amount"))
+                if self._payment_method() == "usdt_ton"
+                else Decimal(str(result.get("amount") or "0"))
+            )
+            await self._check_payment_balance(required_amount)
 
             return FragmentRequest(
                 req_id=result["req_id"],
                 recipient=FragmentRecipient(recipient_id=recipient_id, username=""),
+                amount=float(required_amount) if required_amount > 0 else None,
             )
 
         except FragmentAPIError as e:
@@ -650,17 +867,27 @@ class FragmentClient:
         """
         await self._ensure_initialized()
 
+        data = {
+            "transaction": 1,
+            "id": req_id,
+            "show_sender": 1 if show_sender else 0,
+            "method": "getGiftPremiumLink",
+        }
+        if self._payment_method() == "ton":
+            data.update(
+                {
+                    "account": json.dumps(self._get_account_data()),
+                    "device": json.dumps(self._config.tonkeeper_device),
+                }
+            )
+
         link_data = await self._call_api(
-            {
-                "account": json.dumps(self._get_account_data()),
-                "device": json.dumps({"platform": "python"}),
-                "transaction": "1",
-                "id": req_id,
-                "show_sender": "1" if show_sender else "0",
-                "method": "getGiftPremiumLink",
-            },
+            data,
             "getGiftPremiumLink",
+            page_url=self._config.premium_page_url,
         )
+        if link_data.get("need_verify"):
+            raise FragmentAccessDeniedError("getGiftPremiumLink", link_data)
 
         return await self._execute_transactions(link_data)
 
@@ -742,7 +969,7 @@ class FragmentClient:
         ).decode()
 
         return {
-            "address": self._address,
+            "address": self._raw_address or self._address,
             "chain": "-239",
             "walletStateInit": state_init,
             "publicKey": self._public_key.hex(),

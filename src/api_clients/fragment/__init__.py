@@ -3,6 +3,8 @@ from src.api_clients.fragment.config import FragmentConfig
 from src.api_clients.fragment.exceptions import (
     FragmentError,
     FragmentAPIError,
+    FragmentAccessDeniedError,
+    FragmentWalletLinkRequiredError,
     SessionExpiredError,
     RecipientNotFoundError,
     InsufficientFundsError,
@@ -18,6 +20,8 @@ __all__ = [
     "FragmentRecipient",
     "FragmentError",
     "FragmentAPIError",
+    "FragmentAccessDeniedError",
+    "FragmentWalletLinkRequiredError",
     "SessionExpiredError",
     "RecipientNotFoundError",
     "InsufficientFundsError",

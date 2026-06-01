@@ -66,6 +66,7 @@ class FragmentConfigData:
     stel_token: str
     stel_ssid: str
     stel_ton_token: str
+    payment_method: str = "ton"
 
     @classmethod
     def from_env(cls) -> "FragmentConfigData":
@@ -80,9 +81,7 @@ class FragmentConfigData:
         if len(mnemonic) != 24:
             raise ValueError("MNEMONIC must contain 24 words")
 
-        fragment_hash = os.getenv("FRAGMENT_HASH")
-        if not fragment_hash:
-            raise ValueError("FRAGMENT_HASH is required")
+        fragment_hash = os.getenv("FRAGMENT_HASH", "")
 
         stel_token = os.getenv("STEL_TOKEN")
         if not stel_token:
@@ -95,6 +94,7 @@ class FragmentConfigData:
         stel_ton_token = os.getenv("STEL_TON_TOKEN")
         if not stel_ton_token:
             raise ValueError("STEL_TON_TOKEN is required")
+        payment_method = os.getenv("FRAGMENT_PAYMENT_METHOD", "ton")
 
         return cls(
             tonapi_key=tonapi_key,
@@ -103,6 +103,7 @@ class FragmentConfigData:
             stel_token=stel_token,
             stel_ssid=stel_ssid,
             stel_ton_token=stel_ton_token,
+            payment_method=payment_method,
         )
 
 
@@ -134,6 +135,7 @@ def get_fragment_config():
         stel_token=data.stel_token,
         stel_ssid=data.stel_ssid,
         stel_ton_token=data.stel_ton_token,
+        payment_method=data.payment_method,
     )
 
 

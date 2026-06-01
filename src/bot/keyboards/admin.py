@@ -1287,8 +1287,46 @@ def get_fragment_detail_keyboard(account_id: int, is_active: bool) -> InlineKeyb
             ],
             [
                 InlineKeyboardButton(
+                    text="💳 Способ оплаты",
+                    callback_data=f"admin:fragment:payment:{account_id}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
                     text="◀️ Назад к списку",
                     callback_data=AdminCallback.FRAGMENT_LIST,
+                ),
+            ],
+        ]
+    )
+
+
+def get_fragment_payment_method_keyboard(
+    account_id: int,
+    current_method: str = "ton",
+) -> InlineKeyboardMarkup:
+    """Клавиатура выбора способа оплаты Fragment аккаунта."""
+    ton_mark = " ✅" if current_method == "ton" else ""
+    usdt_mark = " ✅" if current_method == "usdt_ton" else ""
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"TON{ton_mark}",
+                    callback_data=f"admin:fragment:payment:set:{account_id}:ton",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"USDT TON{usdt_mark}",
+                    callback_data=f"admin:fragment:payment:set:{account_id}:usdt_ton",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="◀️ Назад",
+                    callback_data=f"admin:fragment:view:{account_id}",
                 ),
             ],
         ]
@@ -1323,7 +1361,7 @@ def get_fragment_edit_keyboard(account_id: int) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="#️⃣ Fragment Hash",
+                    text="#️⃣ Резервный Hash",
                     callback_data=f"admin:fragment:edit:{account_id}:hash",
                 ),
             ],

@@ -9,6 +9,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy import select
 
 from src.db.session import async_session_factory
@@ -95,17 +96,28 @@ async def notify_order_completed(order: "Order") -> None:
         # Всегда используем кнопку "В меню"
         keyboard = get_back_to_menu_keyboard(lang)
 
-        # Редактируем существующее сообщение или отправляем новое
+        edited = False
         if order.message_id:
-            await _bot.edit_message_text(
-                chat_id=order.user_id,
-                message_id=order.message_id,
-                text=text,
-                parse_mode="HTML",
-                reply_markup=keyboard,
-            )
-            logger.info(f"Edited completion message for user {order.user_id}, order {order.id}")
-        else:
+            try:
+                await _bot.edit_message_text(
+                    chat_id=order.user_id,
+                    message_id=order.message_id,
+                    text=text,
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+                edited = True
+                logger.info(f"Edited completion message for user {order.user_id}, order {order.id}")
+            except TelegramBadRequest as e:
+                if "there is no text in the message to edit" not in str(e).lower():
+                    raise
+                logger.warning(
+                    "Cannot edit non-text order message %s for user %s, sending a new message",
+                    order.message_id,
+                    order.user_id,
+                )
+
+        if not edited:
             await _bot.send_message(
                 chat_id=order.user_id,
                 text=text,
@@ -172,17 +184,28 @@ async def notify_order_failed(order: "Order", error_message: str) -> None:
         # Всегда используем кнопку "В меню"
         keyboard = get_back_to_menu_keyboard(lang)
 
-        # Редактируем существующее сообщение или отправляем новое
+        edited = False
         if order.message_id:
-            await _bot.edit_message_text(
-                chat_id=order.user_id,
-                message_id=order.message_id,
-                text=text,
-                parse_mode="HTML",
-                reply_markup=keyboard,
-            )
-            logger.info(f"Edited failure message for user {order.user_id}, order {order.id}")
-        else:
+            try:
+                await _bot.edit_message_text(
+                    chat_id=order.user_id,
+                    message_id=order.message_id,
+                    text=text,
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+                edited = True
+                logger.info(f"Edited failure message for user {order.user_id}, order {order.id}")
+            except TelegramBadRequest as e:
+                if "there is no text in the message to edit" not in str(e).lower():
+                    raise
+                logger.warning(
+                    "Cannot edit non-text order message %s for user %s, sending a new message",
+                    order.message_id,
+                    order.user_id,
+                )
+
+        if not edited:
             await _bot.send_message(
                 chat_id=order.user_id,
                 text=text,
@@ -209,6 +232,12 @@ def _get_user_friendly_error(error_message: str, lang: str = "ru") -> str:
 
     if "session expired" in error_lower:
         return t("common.order.errors.session_expired", lang)
+
+    if "access denied" in error_lower:
+        return t("common.order.errors.internal_error", lang)
+
+    if "linking the wallet" in error_lower or "link wallet" in error_lower:
+        return t("common.order.errors.internal_error", lang)
 
     if "timeout" in error_lower:
         return t("common.order.errors.timeout", lang)

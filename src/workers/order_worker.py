@@ -520,6 +520,22 @@ class OrderWorker:
                 error_message=error,
             )
 
+    async def _mark_account_disabled(self, account_id: int, error: str) -> None:
+        """Отключить Fragment аккаунт после ошибки, требующей ручной проверки."""
+        async with async_session_factory() as session:
+            service = FragmentAccountService(session)
+            await service.set_status(account_id, FragmentAccountStatus.DISABLED, error)
+            await session.commit()
+            logger.warning(f"Fragment account {account_id} disabled: {error}")
+
+        try:
+            from src.services.recipient_service import clear_client_cache, invalidate_account_cache
+
+            clear_client_cache(account_id)
+            invalidate_account_cache()
+        except Exception as cache_error:
+            logger.warning(f"Failed to clear Fragment recipient cache for account {account_id}: {cache_error}")
+
     async def _run_loop(self) -> None:
         """
         Основной цикл обработки очереди.
@@ -826,6 +842,31 @@ class OrderWorker:
                 logger.warning(
                     f"Order {order_id} will be retried with different account: {result.error_message}"
                 )
+
+            elif result.error_type == PaymentErrorType.ACCESS_DENIED:
+                # Fragment отклонил покупочный flow: аккаунт требует ручной проверки.
+                if account_id:
+                    await self._mark_account_disabled(
+                        account_id,
+                        result.error_message or "Fragment access denied",
+                    )
+                    await self._update_account_stats(account_id, success=False)
+                    self._update_warmth_on_order_complete(account_id, success=False)
+                    await self._remove_client_from_pool(account_id)
+
+                if item.can_retry:
+                    await order_service.return_to_pending(order_id)
+                    await session.commit()
+                    await self._queue.requeue(item, delay=self._retry_delay_base)
+                    logger.warning(
+                        f"Order {order_id} will be retried with another Fragment account: "
+                        f"{result.error_message}"
+                    )
+                else:
+                    error_msg = result.error_message or "Fragment access denied"
+                    await order_service.set_failed(order_id, error_msg)
+                    await session.commit()
+                    logger.error(f"Order {order_id} failed after access denied: {error_msg}")
 
             elif result.error_type == PaymentErrorType.INSUFFICIENT_FUNDS:
                 await order_service.return_to_pending(order_id)

@@ -506,6 +506,7 @@ class FragmentAccount(Base):
     stel_ssid: Mapped[str] = mapped_column(Text)
     stel_ton_token: Mapped[str] = mapped_column(Text)
     stel_dt: Mapped[str] = mapped_column(String(20), default="-300")
+    payment_method: Mapped[str] = mapped_column(String(20), default="ton")
 
     # Статус аккаунта
     status: Mapped[str] = mapped_column(String(30), default="active")
@@ -545,5 +546,4 @@ class FragmentAccount(Base):
         Index("ix_fragment_accounts_status", "status"),
         Index("ix_fragment_accounts_is_active", "is_active"),
     )
-
 

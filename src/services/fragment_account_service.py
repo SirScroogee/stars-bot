@@ -16,6 +16,9 @@ from src.db.models import FragmentAccount, FragmentAccountStatus
 logger = logging.getLogger(__name__)
 
 
+SUPPORTED_FRAGMENT_PAYMENT_METHODS = {"ton", "usdt_ton"}
+
+
 @dataclass
 class FragmentAccountData:
     """Расшифрованные данные аккаунта Fragment."""
@@ -30,6 +33,7 @@ class FragmentAccountData:
     stel_ssid: str
     stel_ton_token: str
     stel_dt: str
+    payment_method: str
     status: str
     is_active: bool
     priority: int
@@ -52,6 +56,7 @@ class FragmentAccountService:
         stel_ssid: str,
         stel_ton_token: str,
         stel_dt: str = "-300",
+        payment_method: str = "ton",
         wallet_address: Optional[str] = None,
         priority: int = 0,
     ) -> FragmentAccount:
@@ -72,6 +77,9 @@ class FragmentAccountService:
         Returns:
             Созданный аккаунт
         """
+        if payment_method not in SUPPORTED_FRAGMENT_PAYMENT_METHODS:
+            raise ValueError(f"Unsupported payment method: {payment_method}")
+
         if len(mnemonic) != 24:
             raise ValueError("Mnemonic must contain 24 words")
 
@@ -85,6 +93,7 @@ class FragmentAccountService:
             stel_ssid=stel_ssid,
             stel_ton_token=stel_ton_token,
             stel_dt=stel_dt,
+            payment_method=payment_method,
             status=FragmentAccountStatus.ACTIVE.value,
             is_active=True,
             priority=priority,
@@ -125,6 +134,7 @@ class FragmentAccountService:
             stel_ssid=account.stel_ssid,
             stel_ton_token=account.stel_ton_token,
             stel_dt=account.stel_dt or "-300",
+            payment_method=account.payment_method or "ton",
             status=account.status,
             is_active=account.is_active,
             priority=account.priority,
@@ -181,6 +191,7 @@ class FragmentAccountService:
             stel_ssid=account.stel_ssid,
             stel_ton_token=account.stel_ton_token,
             stel_dt=account.stel_dt or "-300",
+            payment_method=account.payment_method or "ton",
             status=account.status,
             is_active=account.is_active,
             priority=account.priority,
@@ -223,6 +234,7 @@ class FragmentAccountService:
         stel_ssid: Optional[str] = None,
         stel_ton_token: Optional[str] = None,
         stel_dt: Optional[str] = None,
+        payment_method: Optional[str] = None,
         wallet_address: Optional[str] = None,
         priority: Optional[int] = None,
         is_active: Optional[bool] = None,
@@ -254,6 +266,10 @@ class FragmentAccountService:
             account.stel_ton_token = stel_ton_token
         if stel_dt is not None:
             account.stel_dt = stel_dt
+        if payment_method is not None:
+            if payment_method not in SUPPORTED_FRAGMENT_PAYMENT_METHODS:
+                raise ValueError(f"Unsupported payment method: {payment_method}")
+            account.payment_method = payment_method
         if wallet_address is not None:
             account.wallet_address = wallet_address
         if priority is not None:
@@ -311,7 +327,7 @@ class FragmentAccountService:
         account.error_message = error_message
         account.updated_at = datetime.utcnow()
 
-        if status == FragmentAccountStatus.SESSION_EXPIRED:
+        if status in {FragmentAccountStatus.SESSION_EXPIRED, FragmentAccountStatus.DISABLED}:
             account.is_active = False
 
         logger.info(f"Fragment account {account_id}: status changed to {status.value}")

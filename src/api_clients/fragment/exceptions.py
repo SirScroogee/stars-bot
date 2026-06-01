@@ -41,6 +41,28 @@ class SessionExpiredError(FragmentAPIError):
         )
 
 
+class FragmentAccessDeniedError(FragmentAPIError):
+    """Fragment отклонил действие, но это не обязательно истекшая сессия."""
+
+    def __init__(self, method: str, response: dict | None = None):
+        super().__init__(
+            "Fragment access denied for purchase flow.",
+            method=method,
+            response=response or {"error": "Access denied"},
+        )
+
+
+class FragmentWalletLinkRequiredError(FragmentAPIError):
+    """Fragment требует привязать кошелек к аккаунту перед покупкой."""
+
+    def __init__(self, method: str, response: dict | None = None):
+        super().__init__(
+            "Fragment requires linking the wallet to the account before purchase.",
+            method=method,
+            response=response or {"error": "Link wallet required"},
+        )
+
+
 class RecipientNotFoundError(FragmentError):
     """Получатель не найден в Telegram."""
 

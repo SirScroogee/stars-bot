@@ -15,6 +15,7 @@ from aiogram.types import CallbackQuery, Message
 from src.api_clients.fragment import FragmentClient
 from src.api_clients.fragment.config import FragmentConfig
 from src.api_clients.fragment.exceptions import (
+    FragmentAccessDeniedError,
     FragmentAPIError,
     RecipientNotFoundError,
     SessionExpiredError,
@@ -26,6 +27,7 @@ from src.bot.keyboards.admin import (
     get_fragment_menu_keyboard,
     get_fragment_list_keyboard,
     get_fragment_detail_keyboard,
+    get_fragment_payment_method_keyboard,
     get_fragment_edit_keyboard,
     get_fragment_priority_keyboard,
     get_fragment_confirm_delete_keyboard,
@@ -288,13 +290,16 @@ async def callback_fragment_view(callback: CallbackQuery) -> None:
     balance_str = f"{account.ton_balance:.4f} TON" if account.ton_balance else "—"
     last_check = account.last_session_check.strftime("%d.%m.%Y %H:%M") if account.last_session_check else "никогда"
     wallet = account.wallet_address[:20] + "..." if account.wallet_address and len(account.wallet_address) > 20 else (account.wallet_address or "—")
+    payment_method = account.payment_method or "ton"
+    payment_str = "USDT TON" if payment_method == "usdt_ton" else "TON"
 
     text = (
         f"💎 <b>Информация об аккаунте</b>\n\n"
         f"<blockquote>"
         f"📝 Имя: <b>{account.name}</b>\n"
         f"📊 Статус: <b>{status_names.get(account.status, account.status)}</b>\n"
-        f"⚡ Приоритет: <b>{priority_str}</b>"
+        f"⚡ Приоритет: <b>{priority_str}</b>\n"
+        f"💳 Способ оплаты: <b>{payment_str}</b>"
         f"</blockquote>\n\n"
         f"<blockquote>"
         f"👛 Кошелёк: <code>{wallet}</code>\n"
@@ -319,6 +324,69 @@ async def callback_fragment_view(callback: CallbackQuery) -> None:
         reply_markup=get_fragment_detail_keyboard(account_id, account.is_active),
         parse_mode="HTML",
     )
+
+
+# ==================== СПОСОБ ОПЛАТЫ ====================
+
+
+@router.callback_query(F.data.regexp(r"^admin:fragment:payment:\d+$"))
+async def callback_fragment_payment(callback: CallbackQuery) -> None:
+    """Меню выбора способа оплаты Fragment аккаунта."""
+    if not await _check_admin(callback):
+        return
+
+    account_id = int(callback.data.split(":")[-1])
+
+    async with async_session_factory() as session:
+        service = FragmentAccountService(session)
+        account = await service.get_account(account_id)
+
+        if not account:
+            await callback.answer("Аккаунт не найден", show_alert=True)
+            return
+
+    current_method = account.payment_method or "ton"
+    current_text = "USDT TON" if current_method == "usdt_ton" else "TON"
+
+    text = (
+        "💳 <b>Способ оплаты Fragment</b>\n\n"
+        f"Аккаунт: <b>{html.escape(account.name)}</b>\n"
+        f"Текущий способ: <b>{current_text}</b>\n\n"
+        "Выберите способ оплаты для Stars и Premium:"
+    )
+
+    await callback.message.edit_text(
+        text=text,
+        reply_markup=get_fragment_payment_method_keyboard(account_id, current_method),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data.regexp(r"^admin:fragment:payment:set:\d+:(ton|usdt_ton)$"))
+async def callback_fragment_payment_set(callback: CallbackQuery) -> None:
+    """Сохранить способ оплаты Fragment аккаунта."""
+    if not await _check_admin(callback):
+        return
+
+    parts = callback.data.split(":")
+    account_id = int(parts[-2])
+    payment_method = parts[-1]
+
+    async with async_session_factory() as session:
+        service = FragmentAccountService(session)
+        account = await service.update_account(account_id, payment_method=payment_method)
+        await session.commit()
+
+        if not account:
+            await callback.answer("Аккаунт не найден", show_alert=True)
+            return
+
+    await trigger_reconfigure()
+    method_text = "USDT TON" if payment_method == "usdt_ton" else "TON"
+    await callback.answer(f"✅ Способ оплаты: {method_text}", show_alert=True)
+
+    view_callback = callback.model_copy(update={"data": f"admin:fragment:view:{account_id}"})
+    await callback_fragment_view(view_callback)
 
 
 # ==================== TOGGLE АКТИВНОСТИ ====================
@@ -505,7 +573,7 @@ async def callback_fragment_edit_field(callback: CallbackQuery, state: FSMContex
         "name": "имя аккаунта",
         "tonapi": "TONAPI Key",
         "mnemonic": "мнемонику (24 слова через пробел)",
-        "hash": "Fragment Hash",
+        "hash": "резервный Fragment Hash (или - чтобы очистить)",
     }
 
     text = (
@@ -550,8 +618,7 @@ async def message_fragment_edit_field(message: Message, state: FSMContext) -> No
                     return
                 await service.update_account(account_id, mnemonic=mnemonic)
             elif field == "hash":
-                await service.update_account(account_id, fragment_hash=value)
-
+                await service.update_account(account_id, fragment_hash="" if value == "-" else value)
             await session.commit()
             await message.answer("✅ Значение обновлено!")
 
@@ -737,7 +804,7 @@ async def message_session_stel_ton_token(message: Message, state: FSMContext) ->
             message_id=bot_message_id,
             text=(
                 "❌ <b>Не удалось проверить сессию</b>\n\n"
-                "Для проверки cookies/hash у админа должен быть Telegram username."
+                "Для проверки cookies у админа должен быть Telegram username."
             ),
             reply_markup=get_fragment_cancel_keyboard(account_id, "view"),
             parse_mode="HTML",
@@ -763,15 +830,22 @@ async def message_session_stel_ton_token(message: Message, state: FSMContext) ->
     if success:
         check_result = await _check_single_account(account_id, preflight_username=preflight_username)
         if check_result.get("success"):
-            # Пересоздаём воркер только после успешной проверки cookies/hash.
+            # Пересоздаём воркер только после успешной проверки cookies.
             await trigger_reconfigure()
         else:
             async with async_session_factory() as check_session:
                 check_service = FragmentAccountService(check_session)
-                await check_service.mark_session_expired(
-                    account_id,
-                    check_result.get("error") or "Fragment preflight failed",
-                )
+                if check_result.get("session_expired"):
+                    await check_service.mark_session_expired(
+                        account_id,
+                        check_result.get("error") or "Fragment session expired",
+                    )
+                else:
+                    await check_service.set_status(
+                        account_id,
+                        FragmentAccountStatus.DISABLED,
+                        check_result.get("error") or "Fragment preflight failed",
+                    )
                 await check_session.commit()
 
     if success and account and check_result.get("success"):
@@ -928,8 +1002,8 @@ async def message_add_mnemonic(message: Message, state: FSMContext) -> None:
         text=(
             "➕ <b>Добавление Fragment аккаунта</b>\n\n"
             "<b>Шаг 4/8:</b> Введите <b>Fragment Hash</b>:\n\n"
-            "<i>После авторизации на fragment.com в URL будет параметр hash=XXX. "
-            "Скопируйте значение XXX.</i>"
+            "<i>Это резервный hash из URL /api?hash=... или со страницы Fragment. "
+            "Если не знаете его, отправьте «-».</i>"
         ),
         reply_markup=get_fragment_cancel_keyboard(),
         parse_mode="HTML",
@@ -938,18 +1012,18 @@ async def message_add_mnemonic(message: Message, state: FSMContext) -> None:
 
 @router.message(FragmentStates.add_fragment_hash)
 async def message_add_fragment_hash(message: Message, state: FSMContext) -> None:
-    """Получение Fragment Hash."""
+    """Получение резервного Fragment Hash."""
     data = await state.get_data()
     bot_message_id = data.get("bot_message_id")
     bot_chat_id = data.get("bot_chat_id")
 
-    # Удаляем сообщение пользователя
     try:
         await message.delete()
     except Exception:
         pass
 
-    await state.update_data(add_fragment_hash=message.text.strip())
+    value = message.text.strip()
+    await state.update_data(add_fragment_hash="" if value == "-" else value)
     await state.set_state(FragmentStates.add_stel_token)
 
     await message.bot.edit_message_text(
@@ -1076,7 +1150,7 @@ async def message_add_stel_ton_token(message: Message, state: FSMContext) -> Non
         f"Имя: <b>{data.get('add_name')}</b>\n"
         f"TONAPI Key: <b>{data.get('add_tonapi_key', '')[:20]}...</b>\n"
         f"Мнемоника: <b>{data.get('add_mnemonic', [''])[0]}...</b> (24 слова)\n"
-        f"Fragment Hash: <b>{data.get('add_fragment_hash')}</b>\n"
+        f"Fragment Hash: <b>{'резервный указан' if data.get('add_fragment_hash') else 'автоматически'}</b>\n"
         f"Токены сессии: <b>✅ Заполнены</b>"
         f"</blockquote>\n\n"
         "Всё верно? Подтвердите добавление:"
@@ -1101,7 +1175,7 @@ async def callback_fragment_confirm(callback: CallbackQuery, state: FSMContext) 
     preflight_username = callback.from_user.username
     if not preflight_username:
         await callback.answer(
-            "❌ Для проверки cookies/hash у админа должен быть Telegram username.",
+            "❌ Для проверки cookies у админа должен быть Telegram username.",
             show_alert=True,
         )
         return
@@ -1114,7 +1188,7 @@ async def callback_fragment_confirm(callback: CallbackQuery, state: FSMContext) 
                 name=data.get("add_name"),
                 tonapi_key=data.get("add_tonapi_key"),
                 mnemonic=data.get("add_mnemonic"),
-                fragment_hash=data.get("add_fragment_hash"),
+                fragment_hash=data.get("add_fragment_hash", ""),
                 stel_token=data.get("add_stel_token"),
                 stel_ssid=data.get("add_stel_ssid"),
                 stel_ton_token=data.get("add_stel_ton_token"),
@@ -1124,16 +1198,23 @@ async def callback_fragment_confirm(callback: CallbackQuery, state: FSMContext) 
 
             check_result = await _check_single_account(account.id, preflight_username=preflight_username)
             if check_result.get("success"):
-                # Пересоздаём воркер только после успешной проверки cookies/hash.
+                # Пересоздаём воркер только после успешной проверки cookies.
                 await trigger_reconfigure()
                 await callback.answer("✅ Аккаунт добавлен и проверен!", show_alert=True)
             else:
                 async with async_session_factory() as check_session:
                     check_service = FragmentAccountService(check_session)
-                    await check_service.mark_session_expired(
-                        account.id,
-                        check_result.get("error") or "Fragment preflight failed",
-                    )
+                    if check_result.get("session_expired"):
+                        await check_service.mark_session_expired(
+                            account.id,
+                            check_result.get("error") or "Fragment session expired",
+                        )
+                    else:
+                        await check_service.set_status(
+                            account.id,
+                            FragmentAccountStatus.DISABLED,
+                            check_result.get("error") or "Fragment preflight failed",
+                        )
                     await check_session.commit()
                 await callback.answer("⚠️ Аккаунт сохранён, но проверка не пройдена", show_alert=True)
             logger.info(f"Fragment account created: {account.id} by admin {callback.from_user.id}")
@@ -1194,13 +1275,21 @@ async def callback_fragment_cancel(callback: CallbackQuery, state: FSMContext) -
 
 
 def _format_fragment_auth_error(error: Exception) -> str:
-    """Понятное описание ошибки cookies/hash Fragment."""
+    """Понятное описание ошибки авторизации Fragment."""
     if isinstance(error, SessionExpiredError):
         method = getattr(error, "method", "unknown")
         return (
-            "Куки или hash не подходят для покупки Stars. "
-            f"Fragment вернул Access denied на методе {method}. "
-            "Обновите fragment_hash и cookies из одной свежей browser-сессии."
+            "Сессия Fragment истекла. "
+            f"Метод: {method}. "
+            "Обновите cookies из свежей browser-сессии."
+        )
+    if isinstance(error, FragmentAccessDeniedError):
+        method = getattr(error, "method", "unknown")
+        return (
+            "Fragment отклонил покупочный запрос Access denied. "
+            f"Метод: {method}. "
+            "Это может быть не истекшая сессия, а несовпадение кошелька, IP/прокси, "
+            "ограничение аккаунта Fragment или изменение антифрод-проверок."
         )
     return str(error)
 
@@ -1230,6 +1319,7 @@ async def _check_single_account(account_id: int, preflight_username: str | None 
             "error": None,
             "session_valid": False,
             "wallet_valid": False,
+            "session_expired": False,
         }
 
         client = None
@@ -1257,7 +1347,7 @@ async def _check_single_account(account_id: int, preflight_username: str | None 
 
             # 2. Проверяем сессию Fragment.
             # Если есть username админа, делаем сильную проверку через initBuyStarsRequest
-            # без оплаты. Поиск получателя сам по себе не гарантирует валидность cookies/hash.
+            # без оплаты. Поиск получателя сам по себе не гарантирует валидность cookies.
             try:
                 if preflight_username:
                     await client.preflight_stars_purchase(
@@ -1271,7 +1361,12 @@ async def _check_single_account(account_id: int, preflight_username: str | None 
                 error = _format_fragment_auth_error(e)
                 logger.warning(f"Account {account_id}: {error}")
                 result["error"] = error
+                result["session_expired"] = True
                 await service.mark_session_expired(account_id, error)
+            except FragmentAccessDeniedError as e:
+                error = _format_fragment_auth_error(e)
+                logger.warning(f"Account {account_id}: {error}")
+                result["error"] = error
             except RecipientNotFoundError as e:
                 logger.warning(f"Account {account_id}: preflight recipient failed: {e}")
                 result["error"] = (

@@ -22,6 +22,7 @@ class FragmentConfig:
     stel_ssid: str
     stel_ton_token: str
     stel_dt: str = "-300"
+    payment_method: str = "ton"
 
     # ID аккаунта в БД (для обновления статистики)
     account_id: int | None = None
@@ -36,10 +37,12 @@ class FragmentConfig:
 
     # Fragment API
     fragment_url: str = "https://fragment.com/api"
+    fragment_base_url: str = "https://fragment.com"
+    stars_page_url: str = "https://fragment.com/stars/buy"
+    premium_page_url: str = "https://fragment.com/premium/gift"
     user_agent: str = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/125.0.0.0 Safari/537.36"
+        "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Mobile Safari/537.36"
     )
 
     # ===== КЭШИРОВАНИЕ =====
@@ -73,17 +76,30 @@ class FragmentConfig:
             "Accept": "application/json, text/javascript, */*; q=0.01",
             "Accept-Encoding": "gzip, deflate",
             "Accept-Language": "ru,en;q=0.9",
-            "Content-Type": "application/x-www-form-urlencoded",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             "Origin": "https://fragment.com",
-            "Referer": "https://fragment.com/stars/buy",
             "Priority": "u=1, i",
-            "Sec-Ch-Ua": '"Chromium";v="148", "Microsoft Edge";v="148", "Not(A)Brand";v="99"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Windows"',
+            "Sec-Ch-Ua": '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
+            "Sec-Ch-Ua-Mobile": "?1",
+            "Sec-Ch-Ua-Platform": '"Android"',
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
             "X-Requested-With": "XMLHttpRequest",
+        }
+
+    @property
+    def tonkeeper_device(self) -> dict:
+        return {
+            "platform": "iphone",
+            "appName": "Tonkeeper",
+            "appVersion": "26.04.0",
+            "maxProtocolVersion": 2,
+            "features": [
+                "SendTransaction",
+                {"name": "SendTransaction", "maxMessages": 255},
+                {"name": "SignData", "types": ["text", "binary", "cell"]},
+            ],
         }
 
     @classmethod
@@ -97,6 +113,7 @@ class FragmentConfig:
             stel_ssid=account.stel_ssid,
             stel_ton_token=account.stel_ton_token,
             stel_dt=account.stel_dt,
+            payment_method=account.payment_method,
             account_id=account.id,
         )
 
@@ -119,9 +136,7 @@ class FragmentConfig:
         if len(mnemonic) != 24:
             raise ValueError("MNEMONIC must contain 24 words")
 
-        fragment_hash = os.getenv("FRAGMENT_HASH")
-        if not fragment_hash:
-            raise ValueError("FRAGMENT_HASH is required")
+        fragment_hash = os.getenv("FRAGMENT_HASH", "")
 
         stel_token = os.getenv("STEL_TOKEN")
         if not stel_token:
@@ -135,6 +150,7 @@ class FragmentConfig:
         if not stel_ton_token:
             raise ValueError("STEL_TON_TOKEN is required")
         stel_dt = os.getenv("STEL_DT", "-300")
+        payment_method = os.getenv("FRAGMENT_PAYMENT_METHOD", "ton")
 
         return cls(
             tonapi_key=tonapi_key,
@@ -144,5 +160,6 @@ class FragmentConfig:
             stel_ssid=stel_ssid,
             stel_ton_token=stel_ton_token,
             stel_dt=stel_dt,
+            payment_method=payment_method,
             account_id=None,  # Нет связи с БД
         )
