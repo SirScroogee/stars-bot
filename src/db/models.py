@@ -38,13 +38,16 @@ class PaymentStatus(enum.Enum):
     CONFIRMED = "confirmed"
     FAILED = "failed"
     EXPIRED = "expired"
+    CANCELED = "canceled"
     REFUNDED = "refunded"
+    CHARGEBACKED = "chargebacked"
 
 
 class PaymentProvider(enum.Enum):
     BALANCE = "balance"
     TON = "ton"
     CRYPTOBOT = "cryptobot"
+    PLATEGA = "platega"
 
 
 class ProductType(enum.Enum):
@@ -180,6 +183,42 @@ class Payment(Base):
 
     # Relationships
     order: Mapped["Order"] = relationship("Order", back_populates="payment")
+
+
+class PlategaPayment(Base):
+    __tablename__ = "platega_payments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True)
+    order_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("orders.id"), nullable=True)
+
+    operation_type: Mapped[str] = mapped_column(String(20))  # deposit / stars / premium
+    provider_tx_id: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(20), default=PaymentStatus.PENDING.value)
+
+    amount_usdt: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    amount_rub: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    fee_percent: Mapped[Decimal] = mapped_column(Numeric(8, 4), default=Decimal("0.0000"))
+
+    payment_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    payload: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    response_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("ix_platega_payments_status_created", "status", "created_at"),
+        Index("ix_platega_payments_user_status", "user_id", "status"),
+    )
 
 
 class Transaction(Base):
@@ -546,4 +585,3 @@ class FragmentAccount(Base):
         Index("ix_fragment_accounts_status", "status"),
         Index("ix_fragment_accounts_is_active", "is_active"),
     )
-

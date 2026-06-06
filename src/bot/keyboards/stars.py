@@ -29,12 +29,14 @@ class StarsCallback:
     PAY_BALANCE = "stars:pay:balance"
     PAY_CRYPTOBOT = "stars:pay:cryptobot"
     PAY_TON = "stars:pay:ton"
+    PAY_PLATEGA_SBP = "stars:pay:platega_sbp"
     CONFIRM_BALANCE = "stars:pay:balance:confirm"
     CANCEL_BALANCE = "stars:pay:balance:cancel"
 
     # Проверка оплаты
     CHECK_PAYMENT = "stars:check"
     CHECK_TON_PAYMENT = "stars:check:ton"
+    CHECK_PLATEGA_PAYMENT = "stars:check:platega"
     CANCEL_PAYMENT = "stars:cancel"
 
     # Подтверждение
@@ -147,6 +149,12 @@ def get_payment_method_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
+                    text="🏦 СБП (+8%)",
+                    callback_data=StarsCallback.PAY_PLATEGA_SBP,
+                ),
+            ],
+            [
+                InlineKeyboardButton(
                     text=t("common.back", lang),
                     callback_data=StarsCallback.BACK_TO_AMOUNT,
                 ),
@@ -215,6 +223,32 @@ def get_stars_ton_payment_keyboard(ton_url: str, lang: str = "ru") -> InlineKeyb
                 InlineKeyboardButton(
                     text=t("common.buttons.check_payment", lang),
                     callback_data=StarsCallback.CHECK_TON_PAYMENT,
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("common.cancel", lang),
+                    callback_data=StarsCallback.CANCEL_PAYMENT,
+                ),
+            ],
+        ]
+    )
+
+
+def get_stars_platega_payment_keyboard(pay_url: str, lang: str = "ru") -> InlineKeyboardMarkup:
+    """Клавиатура ожидания оплаты СБП для Stars."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🏦 Оплатить СБП",
+                    url=pay_url,
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("common.buttons.check_payment", lang),
+                    callback_data=StarsCallback.CHECK_PLATEGA_PAYMENT,
                 ),
             ],
             [

@@ -91,6 +91,7 @@ class AdminCallback:
     SETTINGS_PAYMENTS = "admin:settings:payments"  # Способы оплаты
     SETTINGS_PAYMENT_CRYPTOBOT = "admin:settings:payment:cryptobot"  # Настройки CryptoBot
     SETTINGS_PAYMENT_TON = "admin:settings:payment:ton"  # Настройки TON
+    SETTINGS_PAYMENT_PLATEGA = "admin:settings:payment:platega"  # Настройки СБП Platega
     SETTINGS_REFERRAL = "admin:settings:referral"
     SETTINGS_SUPPORT = "admin:settings:support"
     SETTINGS_MEDIA = "admin:settings:media"
@@ -1049,6 +1050,12 @@ def get_settings_payments_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
+                    text="🏦 СБП",
+                    callback_data=AdminCallback.SETTINGS_PAYMENT_PLATEGA,
+                ),
+            ],
+            [
+                InlineKeyboardButton(
                     text="◀️ Назад",
                     callback_data=AdminCallback.SETTINGS_BACK,
                 ),
@@ -1097,6 +1104,45 @@ def get_settings_ton_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="📊 Комиссия",
                     callback_data="admin:settings:edit:payment_fee_ton",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="◀️ Назад",
+                    callback_data=AdminCallback.SETTINGS_PAYMENTS,
+                ),
+            ],
+        ]
+    )
+
+
+def get_settings_platega_keyboard(enabled: bool = False) -> InlineKeyboardMarkup:
+    """Клавиатура настроек СБП Platega."""
+    toggle_text = "Выключить" if enabled else "Включить"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=toggle_text,
+                    callback_data="admin:settings:platega:toggle",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🏪 MerchantId",
+                    callback_data="admin:settings:edit:platega_merchant_id",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔐 Secret",
+                    callback_data="admin:settings:edit:platega_secret",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⏱ Автопроверка",
+                    callback_data="admin:settings:edit:platega_poll_interval_seconds",
                 ),
             ],
             [

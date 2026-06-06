@@ -30,6 +30,7 @@ from src.workers.supervisor import (
     set_supervisor,
     get_supervisor,
 )
+from src.workers.platega_poller import PlategaPaymentPoller
 
 # Импорт роутеров
 from src.bot.handlers import admin, admin_admins, admin_broadcast, admin_fragment, admin_orders, admin_users, admin_workers, bot_admin, checks, deposit, inline, menu, premium, profile, stars, start
@@ -59,6 +60,7 @@ async def main() -> None:
     # Инициализация очереди
     redis_queue = None
     supervisor = None
+    platega_poller = None
 
     if config.redis_url:
         try:
@@ -111,6 +113,9 @@ async def main() -> None:
             on_failed=notify_order_failed,
         )
         logger.info("Order notification callbacks set")
+
+    platega_poller = PlategaPaymentPoller(bot)
+    await platega_poller.start()
 
     # Создаём диспетчер
     dp = Dispatcher()
@@ -198,6 +203,10 @@ async def main() -> None:
         logger.info("Shutting down...")
 
         # Останавливаем WorkerSupervisor
+        if platega_poller:
+            await platega_poller.stop()
+            logger.info("PlategaPaymentPoller stopped")
+
         if supervisor:
             await supervisor.stop()
             logger.info("WorkerSupervisor stopped")

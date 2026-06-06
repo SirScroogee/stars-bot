@@ -27,10 +27,12 @@ class PremiumCallback:
     PAY_BALANCE = "premium:pay:balance"
     PAY_CRYPTOBOT = "premium:pay:cryptobot"
     PAY_TON = "premium:pay:ton"
+    PAY_PLATEGA_SBP = "premium:pay:platega_sbp"
 
     # Проверка оплаты
     CHECK_PAYMENT = "premium:check"
     CHECK_TON_PAYMENT = "premium:check:ton"
+    CHECK_PLATEGA_PAYMENT = "premium:check:platega"
     CANCEL_PAYMENT = "premium:cancel"
 
     # Подтверждение
@@ -145,6 +147,12 @@ def get_premium_payment_method_keyboard(lang: str = "ru") -> InlineKeyboardMarku
             ],
             [
                 InlineKeyboardButton(
+                    text="🏦 СБП (+8%)",
+                    callback_data=PremiumCallback.PAY_PLATEGA_SBP,
+                ),
+            ],
+            [
+                InlineKeyboardButton(
                     text=t("common.back", lang),
                     callback_data=PremiumCallback.BACK_TO_DURATION,
                 ),
@@ -193,6 +201,32 @@ def get_premium_ton_payment_keyboard(ton_url: str, lang: str = "ru") -> InlineKe
                 InlineKeyboardButton(
                     text=t("common.buttons.check_payment", lang),
                     callback_data=PremiumCallback.CHECK_TON_PAYMENT,
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("common.cancel", lang),
+                    callback_data=PremiumCallback.CANCEL_PAYMENT,
+                ),
+            ],
+        ]
+    )
+
+
+def get_premium_platega_payment_keyboard(pay_url: str, lang: str = "ru") -> InlineKeyboardMarkup:
+    """Клавиатура ожидания оплаты СБП для Premium."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🏦 Оплатить СБП",
+                    url=pay_url,
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("common.buttons.check_payment", lang),
+                    callback_data=PremiumCallback.CHECK_PLATEGA_PAYMENT,
                 ),
             ],
             [

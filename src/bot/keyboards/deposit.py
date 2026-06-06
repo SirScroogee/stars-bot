@@ -13,10 +13,12 @@ class DepositCallback:
     # Способы оплаты
     PAY_CRYPTOBOT = "deposit:pay:cryptobot"
     PAY_TON = "deposit:pay:ton"
+    PAY_PLATEGA_SBP = "deposit:pay:platega_sbp"
 
     # Проверка оплаты
     CHECK_PAYMENT = "deposit:check"  # CryptoBot
     CHECK_TON_PAYMENT = "deposit:check:ton"  # TON прямой
+    CHECK_PLATEGA_PAYMENT = "deposit:check:platega"
     CANCEL_PAYMENT = "deposit:cancel"
 
     # Навигация
@@ -72,6 +74,12 @@ def get_payment_method_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
+                    text="🏦 СБП (+8%)",
+                    callback_data=DepositCallback.PAY_PLATEGA_SBP,
+                ),
+            ],
+            [
+                InlineKeyboardButton(
                     text=t("common.back", lang),
                     callback_data=DepositCallback.BACK_TO_AMOUNT,
                 ),
@@ -120,6 +128,32 @@ def get_ton_payment_keyboard(ton_url: str, lang: str = "ru") -> InlineKeyboardMa
                 InlineKeyboardButton(
                     text=t("deposit.buttons.check", lang),
                     callback_data=DepositCallback.CHECK_TON_PAYMENT,
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("deposit.buttons.cancel", lang),
+                    callback_data=DepositCallback.CANCEL_PAYMENT,
+                ),
+            ],
+        ]
+    )
+
+
+def get_platega_payment_keyboard(pay_url: str, lang: str = "ru") -> InlineKeyboardMarkup:
+    """Клавиатура ожидания оплаты СБП."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🏦 Оплатить СБП",
+                    url=pay_url,
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("deposit.buttons.check", lang),
+                    callback_data=DepositCallback.CHECK_PLATEGA_PAYMENT,
                 ),
             ],
             [

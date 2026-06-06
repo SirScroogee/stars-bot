@@ -21,7 +21,12 @@ from src.core.crypto import encrypt, decrypt, EncryptionError
 logger = logging.getLogger(__name__)
 
 # Ключи настроек, которые шифруются при сохранении
-ENCRYPTED_SETTINGS = {"cryptobot_token", "ton_wallet_address"}
+ENCRYPTED_SETTINGS = {
+    "cryptobot_token",
+    "ton_wallet_address",
+    "platega_merchant_id",
+    "platega_secret",
+}
 
 # Ключ настроек в таблице settings
 BOT_SETTINGS_KEY = "bot_settings"
@@ -49,6 +54,10 @@ DEFAULT_BOT_SETTINGS = {
     "payment_fee_ton": "0",
     "cryptobot_token": "",
     "ton_wallet_address": "",
+    "platega_enabled": "false",
+    "platega_merchant_id": "",
+    "platega_secret": "",
+    "platega_poll_interval_seconds": "5",
     "support_username": "support",
     "news_channel_url": "",
     "menu_media": {},
@@ -352,3 +361,17 @@ async def get_ton_fee() -> Decimal:
     settings = await get_bot_settings()
     fee_percent = Decimal(settings.get("payment_fee_ton", "0"))
     return fee_percent / Decimal("100")
+
+
+async def get_platega_settings() -> dict:
+    """Получить настройки Platega/СБП."""
+    settings = await get_bot_settings()
+    return {
+        "enabled": str(settings.get("platega_enabled", "false")).lower() in ("true", "1", "yes", "on"),
+        "merchant_id": settings.get("platega_merchant_id", "") or "",
+        "secret": settings.get("platega_secret", "") or "",
+        "base_url": "https://app.platega.io",
+        "sbp_method_id": 2,
+        "poll_interval_seconds": int(settings.get("platega_poll_interval_seconds", "5") or 5),
+        "payment_ttl_minutes": 30,
+    }

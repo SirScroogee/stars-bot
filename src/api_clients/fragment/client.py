@@ -30,7 +30,7 @@ from typing import Any
 
 import aiohttp
 from aiohttp import ClientTimeout, TCPConnector
-from tonsdk.boc import Cell
+from pytoniq_core import Cell
 from tonutils.client import TonapiClient
 from tonutils.wallet import WalletV4R2
 
@@ -958,9 +958,9 @@ class FragmentClient:
 
     @staticmethod
     async def _payload_cell(payload_b64: str) -> Cell:
-        """Декодировать payload из base64 в Cell."""
-        padded = payload_b64 + "=" * (-len(payload_b64) % 4)
-        return Cell.one_from_boc(base64.b64decode(padded))
+        """Декодировать payload Fragment из base64/base64url в Cell."""
+        padded = payload_b64.strip() + "=" * (-len(payload_b64.strip()) % 4)
+        return Cell.one_from_boc(base64.urlsafe_b64decode(padded))
 
     def _get_account_data(self) -> dict[str, Any]:
         """Получить данные аккаунта для Fragment API."""

@@ -6,6 +6,7 @@ import time
 from decimal import Decimal
 
 from aiogram import F, Router, Bot
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
@@ -20,6 +21,7 @@ from src.bot.keyboards.deposit import (
     get_payment_error_keyboard,
     get_payment_method_keyboard,
     get_payment_pending_keyboard,
+    get_platega_payment_keyboard,
     get_ton_payment_keyboard,
 )
 from src.db.models import Transaction, BalanceLedger
@@ -39,6 +41,13 @@ from src.services.ton_payment_service import (
 )
 from src.services.telegram_logger import tg_logger
 from src.services.bot_settings_service import get_cryptobot_fee
+from src.services.platega_service import (
+    PlategaConfigError,
+    PlategaError,
+    build_platega_payment_text,
+    create_platega_payment,
+    process_platega_payment,
+)
 from src.bot.menu_media import edit_menu_message
 
 logger = logging.getLogger(__name__)
@@ -57,6 +66,7 @@ class DepositStates(StatesGroup):
     waiting_method = State()
     waiting_payment = State()  # CryptoBot
     waiting_ton_payment = State()  # TON прямой перевод
+    waiting_platega_payment = State()  # СБП Platega
 
 
 async def safe_delete_message(message: Message) -> None:
@@ -92,6 +102,15 @@ async def safe_edit_message(
         except Exception as caption_error:
             logger.debug(f"Failed to edit caption: {caption_error}")
         return False
+
+
+async def safe_callback_answer(callback: CallbackQuery) -> None:
+    """Ignore expired callback answers; Telegram allows answering only briefly."""
+    try:
+        await callback.answer()
+    except TelegramBadRequest as e:
+        if "query is too old" not in str(e):
+            raise
 
 
 async def edit_bot_message(
@@ -163,7 +182,7 @@ async def callback_deposit_menu(callback: CallbackQuery, state: FSMContext) -> N
         if sent_message:
             await state.update_data(bot_message_id=sent_message.message_id)
 
-    await callback.answer()
+    await safe_callback_answer(callback)
 
 
 @router.message(DepositStates.waiting_amount)
@@ -256,6 +275,12 @@ async def callback_pay_cryptobot(callback: CallbackQuery, state: FSMContext) -> 
 async def callback_pay_ton(callback: CallbackQuery, state: FSMContext) -> None:
     """Оплата через прямой перевод TON."""
     await _create_ton_payment(callback, state)
+
+
+@router.callback_query(F.data == DepositCallback.PAY_PLATEGA_SBP, DepositStates.waiting_method)
+async def callback_pay_platega_sbp(callback: CallbackQuery, state: FSMContext) -> None:
+    """Оплата пополнения через СБП Platega."""
+    await _create_platega_payment(callback, state)
 
 
 async def _create_cryptobot_payment(callback: CallbackQuery, state: FSMContext) -> None:
@@ -393,6 +418,69 @@ async def _create_ton_payment(callback: CallbackQuery, state: FSMContext) -> Non
     await callback.answer()
 
 
+async def _create_platega_payment(callback: CallbackQuery, state: FSMContext) -> None:
+    """Создать платеж СБП Platega для пополнения баланса."""
+    data = await state.get_data()
+    amount = Decimal(data.get("amount", "0"))
+    lang = data.get("lang", "ru")
+    user_id = callback.from_user.id
+
+    await safe_edit_message(
+        callback.message,
+        text=(
+            "🏦 <b>Оплата по СБП</b>\n\n"
+            f"{t('deposit.amount_label', lang, amount=f'{amount:,.2f}')}\n\n"
+            f"{t('deposit.please_wait', lang)}"
+        ),
+    )
+
+    try:
+        async with async_session_factory() as session:
+            created = await create_platega_payment(
+                session,
+                user_id=user_id,
+                operation_type="deposit",
+                amount_usdt=amount,
+                description=f"Balance deposit: {amount} USDT",
+                metadata={"amount_usdt": str(amount)},
+                message_id=callback.message.message_id,
+            )
+            await session.commit()
+
+        await state.update_data(platega_payment_id=created.payment.id)
+        await state.set_state(DepositStates.waiting_platega_payment)
+
+        text = build_platega_payment_text(
+            title="🏦 <b>Оплата по СБП</b>",
+            item_line=f"Зачислится: <b>{amount:,.2f} USDT</b>",
+            amount_usdt=created.amount_to_pay_usdt,
+            amount_rub=created.amount_with_fee_rub,
+            fee_percent=created.fee_percent,
+            ttl_minutes=created.ttl_minutes,
+        )
+        await safe_edit_message(
+            callback.message,
+            text=text,
+            reply_markup=get_platega_payment_keyboard(created.pay_url, lang),
+        )
+
+    except PlategaConfigError as e:
+        await safe_edit_message(
+            callback.message,
+            text=f"❌ <b>СБП временно недоступен</b>\n\n{e}",
+            reply_markup=get_payment_error_keyboard(lang),
+        )
+    except PlategaError as e:
+        logger.error("Failed to create Platega deposit payment: %s", e)
+        await safe_edit_message(
+            callback.message,
+            text="❌ <b>Ошибка создания СБП-платежа</b>\n\nПопробуйте позже или выберите другой способ оплаты.",
+            reply_markup=get_payment_error_keyboard(lang),
+        )
+
+    await callback.answer()
+
+
 @router.callback_query(F.data == DepositCallback.CHECK_PAYMENT, DepositStates.waiting_payment)
 async def callback_check_payment(callback: CallbackQuery, state: FSMContext) -> None:
     """Проверка оплаты CryptoBot."""
@@ -517,6 +605,46 @@ async def callback_check_payment(callback: CallbackQuery, state: FSMContext) -> 
         )
         return
 
+    await callback.answer()
+
+
+@router.callback_query(F.data == DepositCallback.CHECK_PLATEGA_PAYMENT, DepositStates.waiting_platega_payment)
+async def callback_check_platega_payment(callback: CallbackQuery, state: FSMContext) -> None:
+    """Проверка оплаты СБП."""
+    data = await state.get_data()
+    lang = data.get("lang", "ru")
+    payment_id = data.get("platega_payment_id")
+
+    if not payment_id:
+        await callback.answer(t("deposit.error_not_found", lang), show_alert=True)
+        return
+
+    result = await process_platega_payment(int(payment_id), bot=callback.bot, force_check=True)
+    if result.status == "pending":
+        await callback.answer(t("deposit.not_received", lang), show_alert=True)
+        return
+    if result.final:
+        await state.clear()
+        await callback.answer()
+        return
+
+    await callback.answer(result.message or t("deposit.error_check", lang), show_alert=True)
+
+
+@router.callback_query(F.data == DepositCallback.CANCEL_PAYMENT, DepositStates.waiting_platega_payment)
+async def callback_cancel_platega_payment(callback: CallbackQuery, state: FSMContext) -> None:
+    """Отмена ожидания оплаты СБП."""
+    data = await state.get_data()
+    lang = data.get("lang", "ru")
+    await state.clear()
+    await safe_edit_message(
+        callback.message,
+        text=(
+            f"{t('deposit.cancelled_title', lang)}\n\n"
+            f"{t('deposit.cancelled_text', lang)}"
+        ),
+        reply_markup=get_back_to_deposit_keyboard(lang),
+    )
     await callback.answer()
 
 
@@ -721,7 +849,7 @@ async def callback_back_to_amount(callback: CallbackQuery, state: FSMContext) ->
             reply_markup=get_amount_input_keyboard(lang),
         )
 
-    await callback.answer()
+    await safe_callback_answer(callback)
 
 
 @router.callback_query(F.data == DepositCallback.BACK_TO_METHOD)

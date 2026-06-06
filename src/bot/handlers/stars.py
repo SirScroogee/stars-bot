@@ -23,6 +23,7 @@ from src.bot.keyboards.stars import (
     get_payment_method_keyboard,
     get_recipient_keyboard,
     get_stars_menu_keyboard,
+    get_stars_platega_payment_keyboard,
     get_stars_payment_pending_keyboard,
     get_stars_ton_payment_keyboard,
 )
@@ -34,6 +35,13 @@ from src.services.order_service import OrderService
 from src.services.fragment_account_service import FragmentAccountService
 from src.services.recipient_service import validate_stars_recipient
 from src.services.bot_settings_service import get_bot_settings, get_cryptobot_fee
+from src.services.platega_service import (
+    PlategaConfigError,
+    PlategaError,
+    build_platega_payment_text,
+    create_platega_payment,
+    process_platega_payment,
+)
 from src.services.cryptopay_service import (
     create_deposit_invoice,
     check_invoice_status,
@@ -79,6 +87,7 @@ class BuyStarsStates(StatesGroup):
     waiting_balance_confirm = State()
     waiting_cryptobot_payment = State()
     waiting_ton_payment = State()
+    waiting_platega_payment = State()
 
 
 class WithdrawStarsStates(StatesGroup):
@@ -997,6 +1006,81 @@ async def callback_pay_ton(callback: CallbackQuery, state: FSMContext) -> None:
 
 # ==================== ПРОВЕРКА ОПЛАТЫ CRYPTOBOT ====================
 
+@router.callback_query(F.data == StarsCallback.PAY_PLATEGA_SBP, BuyStarsStates.waiting_payment)
+async def callback_pay_platega_sbp(callback: CallbackQuery, state: FSMContext) -> None:
+    """Оплата Stars через СБП Platega."""
+    await _create_platega_payment(callback, state)
+
+
+async def _create_platega_payment(callback: CallbackQuery, state: FSMContext) -> None:
+    """Создать платеж СБП Platega для Stars."""
+    data = await state.get_data()
+    amount = int(data.get("amount", 0))
+    recipient_username = data.get("recipient_username")
+    lang = data.get("lang", "ru")
+    star_price = Decimal(data.get("star_price", str(DEFAULT_STAR_PRICE_USDT)))
+    price_usdt = amount * star_price
+    user_id = callback.from_user.id
+
+    await safe_edit_message(
+        callback.message,
+        text=(
+            "🏦 <b>Оплата по СБП</b>\n\n"
+            f"{t('stars_section.payment.info', lang, username=recipient_username, amount=f'{amount:,}', price=f'{price_usdt:,.2f}')}"
+            "\n\nСоздаем платеж..."
+        ),
+    )
+
+    try:
+        async with async_session_factory() as session:
+            created = await create_platega_payment(
+                session,
+                user_id=user_id,
+                operation_type="stars",
+                amount_usdt=price_usdt,
+                description=f"Stars purchase: {amount} stars",
+                metadata={
+                    "recipient_username": recipient_username,
+                    "quantity": amount,
+                },
+                message_id=callback.message.message_id,
+            )
+            await session.commit()
+
+        await state.update_data(platega_payment_id=created.payment.id)
+        await state.set_state(BuyStarsStates.waiting_platega_payment)
+
+        text = build_platega_payment_text(
+            title="🏦 <b>Оплата по СБП</b>",
+            item_line=f"Получатель: <b>@{recipient_username}</b>\nЗвезды: <b>{amount:,}</b>",
+            amount_usdt=created.amount_to_pay_usdt,
+            amount_rub=created.amount_with_fee_rub,
+            fee_percent=created.fee_percent,
+            ttl_minutes=created.ttl_minutes,
+        )
+        await safe_edit_message(
+            callback.message,
+            text=text,
+            reply_markup=get_stars_platega_payment_keyboard(created.pay_url, lang),
+        )
+
+    except PlategaConfigError as e:
+        await safe_edit_message(
+            callback.message,
+            text=f"❌ <b>СБП временно недоступен</b>\n\n{e}",
+            reply_markup=get_payment_error_keyboard(lang),
+        )
+    except PlategaError as e:
+        logger.error("Failed to create Platega stars payment: %s", e)
+        await safe_edit_message(
+            callback.message,
+            text="❌ <b>Ошибка создания СБП-платежа</b>\n\nПопробуйте позже или выберите другой способ оплаты.",
+            reply_markup=get_payment_error_keyboard(lang),
+        )
+
+    await callback.answer()
+
+
 @router.callback_query(F.data == StarsCallback.CHECK_PAYMENT, BuyStarsStates.waiting_cryptobot_payment)
 async def callback_check_cryptobot_payment(callback: CallbackQuery, state: FSMContext) -> None:
     """Проверка оплаты CryptoBot для Stars."""
@@ -1219,6 +1303,45 @@ async def callback_check_ton_payment(callback: CallbackQuery, state: FSMContext)
 
 
 # ==================== ОТМЕНА ОПЛАТЫ ====================
+
+@router.callback_query(F.data == StarsCallback.CHECK_PLATEGA_PAYMENT, BuyStarsStates.waiting_platega_payment)
+async def callback_check_platega_payment(callback: CallbackQuery, state: FSMContext) -> None:
+    """Проверка оплаты СБП для Stars."""
+    data = await state.get_data()
+    lang = data.get("lang", "ru")
+    payment_id = data.get("platega_payment_id")
+
+    if not payment_id:
+        await callback.answer(t("common.payment_errors.payment_not_found", lang), show_alert=True)
+        return
+
+    result = await process_platega_payment(int(payment_id), bot=callback.bot, force_check=True)
+    if result.status == "pending":
+        await callback.answer(t("common.payment_errors.not_received", lang), show_alert=True)
+        return
+    if result.final:
+        await state.clear()
+        await callback.answer()
+        return
+    await callback.answer(result.message or t("common.payment_errors.invoice_check_error", lang), show_alert=True)
+
+
+@router.callback_query(F.data == StarsCallback.CANCEL_PAYMENT, BuyStarsStates.waiting_platega_payment)
+async def callback_cancel_platega_payment(callback: CallbackQuery, state: FSMContext) -> None:
+    """Отмена ожидания оплаты СБП для Stars."""
+    data = await state.get_data()
+    lang = data.get("lang", "ru")
+    await state.clear()
+    await safe_edit_message(
+        callback.message,
+        text=(
+            f"{t('common.payment_status.cancelled_title', lang)}\n\n"
+            f"{t('common.payment_errors.cancelled', lang)}"
+        ),
+        reply_markup=get_back_to_stars_keyboard(lang),
+    )
+    await callback.answer()
+
 
 @router.callback_query(F.data == StarsCallback.CANCEL_PAYMENT, BuyStarsStates.waiting_cryptobot_payment)
 async def callback_cancel_cryptobot_payment(callback: CallbackQuery, state: FSMContext) -> None:

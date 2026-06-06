@@ -51,6 +51,7 @@ from src.bot.keyboards.admin import (
     get_settings_payments_keyboard,
     get_settings_cryptobot_keyboard,
     get_settings_ton_keyboard,
+    get_settings_platega_keyboard,
     get_settings_cost_keyboard,
     get_settings_referral_keyboard,
     get_settings_support_keyboard,
@@ -2640,6 +2641,9 @@ SETTING_NAMES = {
     "payment_fee_ton": "Комиссия TON (%)",
     "cryptobot_token": "Токен CryptoBot",
     "ton_wallet_address": "Адрес TON кошелька",
+    "platega_merchant_id": "Platega MerchantId",
+    "platega_secret": "Platega Secret",
+    "platega_poll_interval_seconds": "Автопроверка СБП (сек)",
     "support_username": "Username поддержки",
     "news_channel_url": "Ссылка на новостной канал",
 }
@@ -3160,6 +3164,60 @@ async def callback_settings_ton(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
+@router.callback_query(F.data == AdminCallback.SETTINGS_PAYMENT_PLATEGA)
+async def callback_settings_platega(callback: CallbackQuery) -> None:
+    """Настройки СБП Platega."""
+    if not await _check_admin(callback):
+        return
+
+    async with async_session_factory() as session:
+        service = BotSettingsService(session)
+        settings = await service.get_settings()
+
+    enabled = str(settings.get("platega_enabled", "false")).lower() in ("true", "1", "yes", "on")
+    merchant = settings.get("platega_merchant_id", "")
+    secret = settings.get("platega_secret", "")
+    poll = settings.get("platega_poll_interval_seconds", "5")
+
+    merchant_display = (merchant[:8] + "..." + merchant[-4:]) if len(merchant) > 14 else (merchant if merchant else "не установлен")
+    secret_display = (secret[:8] + "..." + secret[-4:]) if len(secret) > 14 else (secret[:4] + "..." if secret else "не установлен")
+    status = "включен" if enabled else "выключен"
+
+    await callback.message.edit_text(
+        text=(
+            "🏦 <b>Настройки СБП</b>\n\n"
+            "<blockquote>"
+            f"Статус: <b>{status}</b>\n"
+            f"MerchantId: <b>{merchant_display}</b>\n"
+            f"Secret: <b>{secret_display}</b>\n"
+            f"Автопроверка: <b>{poll} сек.</b>\n"
+            "Время платежа: <b>30 мин.</b>"
+            "</blockquote>\n\n"
+            "Нажмите для изменения:"
+        ),
+        reply_markup=get_settings_platega_keyboard(enabled),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:settings:platega:toggle")
+async def callback_settings_platega_toggle(callback: CallbackQuery) -> None:
+    """Быстро включить или выключить СБП."""
+    if not await _check_admin(callback):
+        return
+
+    async with async_session_factory() as session:
+        service = BotSettingsService(session, admin_id=callback.from_user.id)
+        settings = await service.get_settings()
+        enabled = str(settings.get("platega_enabled", "false")).lower() in ("true", "1", "yes", "on")
+        await service.set_setting("platega_enabled", "false" if enabled else "true", old_value=settings.get("platega_enabled", "false"))
+        await session.commit()
+
+    invalidate_bot_settings_cache()
+    await callback_settings_platega(callback)
+
+
 @router.callback_query(F.data.startswith("admin:settings:edit:"))
 async def callback_settings_edit(callback: CallbackQuery, state: FSMContext) -> None:
     """Начать редактирование настройки."""
@@ -3189,6 +3247,8 @@ async def callback_settings_edit(callback: CallbackQuery, state: FSMContext) -> 
         section = "cryptobot"
     elif setting_key == "ton_wallet_address" or setting_key == "payment_fee_ton":
         section = "ton"
+    elif setting_key.startswith("platega_"):
+        section = "platega"
     elif setting_key in ("support_username", "news_channel_url"):
         section = "support"
     else:
@@ -3277,6 +3337,24 @@ async def callback_settings_edit(callback: CallbackQuery, state: FSMContext) -> 
             f"📊 Комиссия: <b>{fee}%</b>"
             "</blockquote>\n\n"
         )
+    elif section == "platega":
+        if setting_key == "platega_merchant_id":
+            current_display = (
+                current_value[:8] + "..." + current_value[-4:]
+                if len(str(current_value)) > 14
+                else current_value or "не установлен"
+            )
+        elif setting_key == "platega_secret":
+            current_display = (
+                current_value[:8] + "..." + current_value[-4:]
+                if len(str(current_value)) > 14
+                else "***" if current_value else "не установлен"
+            )
+        elif setting_key == "platega_poll_interval_seconds":
+            current_display = f"{current_value or '5'} сек."
+        else:
+            current_display = current_value or "не установлено"
+        values_block = f"Текущее значение: <b>{current_display}</b>\n\n"
     elif section == "support":
         support_username = settings.get("support_username", "support")
         news_channel_url = settings.get("news_channel_url") or "не задана"
@@ -3449,6 +3527,21 @@ async def process_settings_value(message: Message, state: FSMContext) -> None:
         elif not re.match(r'^(EQ|UQ)[A-Za-z0-9_-]{46}$', new_value):
             is_valid = False
             error_msg = "Неверный формат адреса. Адрес должен начинаться с EQ или UQ и содержать 48 символов"
+
+    elif setting_key in ("platega_merchant_id", "platega_secret"):
+        if not new_value:
+            is_valid = False
+            error_msg = "Значение не может быть пустым"
+
+    elif setting_key == "platega_poll_interval_seconds":
+        try:
+            interval = int(new_value)
+            if interval < 3 or interval > 60:
+                raise ValueError
+            new_value = str(interval)
+        except ValueError:
+            is_valid = False
+            error_msg = "Интервал должен быть от 3 до 60 секунд"
 
     elif setting_key == "support_username":
         # Убираем @ если есть
@@ -3674,6 +3767,46 @@ async def process_settings_value(message: Message, state: FSMContext) -> None:
                 except Exception:
                     pass
 
+        elif setting_key.startswith("platega_"):
+            enabled = str(settings.get("platega_enabled", "false")).lower() in ("true", "1", "yes", "on")
+            merchant = settings.get("platega_merchant_id", "")
+            secret = settings.get("platega_secret", "")
+            poll = settings.get("platega_poll_interval_seconds", "5")
+            merchant_display = (merchant[:8] + "..." + merchant[-4:]) if len(merchant) > 14 else (merchant or "не установлен")
+            secret_display = (secret[:8] + "..." + secret[-4:]) if len(secret) > 14 else ("***" if secret else "не установлен")
+
+            if setting_key == "platega_merchant_id":
+                new_display = merchant_display
+            elif setting_key == "platega_secret":
+                new_display = secret_display
+            elif setting_key == "platega_poll_interval_seconds":
+                new_display = f"{new_value} сек."
+            else:
+                new_display = new_value
+
+            if bot_message_id:
+                try:
+                    await message.bot.edit_message_text(
+                        chat_id=message.chat.id,
+                        message_id=bot_message_id,
+                        text=(
+                            "🏦 <b>Настройки СБП</b>\n\n"
+                            f"✅ {setting_name} изменено на <b>{new_display}</b>\n\n"
+                            "<blockquote>"
+                            f"Статус: <b>{'включен' if enabled else 'выключен'}</b>\n"
+                            f"MerchantId: <b>{merchant_display}</b>\n"
+                            f"Secret: <b>{secret_display}</b>\n"
+                            f"Автопроверка: <b>{poll} сек.</b>\n"
+                            "Время платежа: <b>30 мин.</b>"
+                            "</blockquote>\n\n"
+                            "Нажмите кнопку ниже, чтобы изменить настройку:"
+                        ),
+                        reply_markup=get_settings_platega_keyboard(enabled),
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+
         elif setting_key in ("support_username", "news_channel_url"):
             support_username = settings.get("support_username", "support")
             news_channel_url = settings.get("news_channel_url") or "не задана"
@@ -3732,6 +3865,8 @@ async def callback_settings_cancel(callback: CallbackQuery, state: FSMContext) -
         await callback_settings_cryptobot(callback)
     elif section == "ton":
         await callback_settings_ton(callback)
+    elif section == "platega":
+        await callback_settings_platega(callback)
     else:
         await callback_settings_menu(callback, state)
 
