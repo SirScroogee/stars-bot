@@ -90,18 +90,28 @@ def invalidate_account_cache() -> None:
     logger.debug("Account cache invalidated")
 
 
-def clear_client_cache(account_id: Optional[int] = None) -> None:
+async def clear_client_cache(account_id: Optional[int] = None) -> None:
     """
     Очистить кэш клиентов.
 
     Args:
         account_id: ID аккаунта для очистки, или None для очистки всего кэша
     """
-    global _fragment_clients
+    global _fragment_clients, _fallback_client
     if account_id is not None:
-        _fragment_clients.pop(account_id, None)
+        clients = [_fragment_clients.pop(account_id, None)]
     else:
+        clients = list(_fragment_clients.values())
         _fragment_clients.clear()
+        clients.append(_fallback_client)
+        _fallback_client = None
+
+    for client in clients:
+        if client:
+            try:
+                await client.close()
+            except Exception:
+                logger.exception("Failed to close cached Fragment client")
 
 
 @dataclass

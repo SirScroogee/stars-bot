@@ -9,13 +9,14 @@ import logging
 from typing import TYPE_CHECKING
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from sqlalchemy import select
 
 from src.db.session import async_session_factory
 from src.db.models import User
 from src.locales import t
 from src.bot.keyboards.stars import get_back_to_menu_keyboard
+from src.services.bot_settings_service import get_bot_settings
 
 if TYPE_CHECKING:
     from src.db.models import Order
@@ -35,6 +36,23 @@ async def _get_user_language(user_id: int) -> str:
     except Exception as e:
         logger.error(f"Failed to get user language: {e}")
         return "ru"
+
+
+async def _get_support_username() -> str:
+    try:
+        settings = await get_bot_settings()
+        return str(settings.get("support_username") or "support").lstrip("@")
+    except Exception:
+        return "support"
+
+
+async def get_order_processing_notice(lang: str) -> str:
+    """Text shown immediately after a purchase payment is confirmed."""
+    return t(
+        "common.order.payment_confirmed_processing",
+        lang,
+        support_username=await _get_support_username(),
+    )
 
 # Глобальный экземпляр бота для отправки уведомлений
 _bot: Bot | None = None
@@ -59,6 +77,15 @@ async def notify_order_completed(order: "Order") -> None:
     Args:
         order: Выполненный заказ
     """
+    # Giveaway accounting is independent from Telegram message delivery. The
+    # operation is idempotent and the background worker also reconciles misses.
+    try:
+        from src.services.giveaway_service import process_completed_order_for_giveaways
+
+        await process_completed_order_for_giveaways(order.id)
+    except Exception:
+        logger.exception("Failed to account order %s in active giveaways", order.id)
+
     if not _bot:
         logger.warning("Notification bot not set, cannot notify user")
         return
@@ -154,7 +181,14 @@ async def notify_order_failed(order: "Order", error_message: str) -> None:
         title = t("common.order.error_title", lang, order_key=order.order_key)
         recipient = t("common.order.recipient", lang, username=order.recipient_username)
         reason = t("common.order.error_reason", lang, reason=user_error)
-        refund = t("common.order.error_refund", lang)
+        if order.payment_provider == "balance":
+            resolution = t("common.order.error_refund", lang)
+        else:
+            resolution = t(
+                "common.order.error_support",
+                lang,
+                support_username=await _get_support_username(),
+            )
 
         if order.product_type == "stars":
             quantity = t("common.order.quantity_stars", lang, amount=f"{order.quantity:,}")
@@ -163,7 +197,7 @@ async def notify_order_failed(order: "Order", error_message: str) -> None:
                 f"<blockquote>{recipient}\n"
                 f"{quantity}</blockquote>\n\n"
                 f"{reason}\n\n"
-                f"{refund}"
+                f"{resolution}"
             )
         elif order.product_type == "premium":
             quantity = t("common.order.quantity_premium", lang, months=order.quantity)
@@ -172,13 +206,13 @@ async def notify_order_failed(order: "Order", error_message: str) -> None:
                 f"<blockquote>{recipient}\n"
                 f"{quantity}</blockquote>\n\n"
                 f"{reason}\n\n"
-                f"{refund}"
+                f"{resolution}"
             )
         else:
             text = (
                 f"{title}\n\n"
                 f"{reason}\n\n"
-                f"{refund}"
+                f"{resolution}"
             )
 
         # Всегда используем кнопку "В меню"
@@ -216,6 +250,67 @@ async def notify_order_failed(order: "Order", error_message: str) -> None:
 
     except Exception as e:
         logger.error(f"Failed to send/edit failure notification to user {order.user_id}: {e}")
+
+
+async def notify_order_delayed(order: "Order") -> bool:
+    """Tell the buyer that payment succeeded but fulfillment is delayed."""
+    if not _bot:
+        logger.warning("Notification bot not set, cannot notify delayed order user")
+        return False
+
+    try:
+        lang = await _get_user_language(order.user_id)
+        support_username = await _get_support_username()
+        title = t("common.order.delayed_title", lang, order_key=order.order_key)
+        recipient = t("common.order.recipient", lang, username=order.recipient_username)
+        if order.product_type == "stars":
+            quantity = t("common.order.quantity_stars", lang, amount=f"{order.quantity:,}")
+        else:
+            quantity = t("common.order.quantity_premium", lang, months=order.quantity)
+        text = (
+            f"{title}\n\n"
+            f"<blockquote>{recipient}\n{quantity}</blockquote>\n\n"
+            f"{t('common.order.delayed_text', lang, support_username=support_username)}"
+        )
+        keyboard = get_back_to_menu_keyboard(lang)
+
+        edited = False
+        if order.message_id:
+            try:
+                await _bot.edit_message_text(
+                    chat_id=order.user_id,
+                    message_id=order.message_id,
+                    text=text,
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+                edited = True
+            except TelegramBadRequest as exc:
+                error_text = str(exc).lower()
+                if "message is not modified" in error_text:
+                    return True
+                if "there is no text in the message to edit" not in error_text:
+                    logger.warning(
+                        "Could not edit delayed order message %s for user %s: %s",
+                        order.message_id,
+                        order.user_id,
+                        exc,
+                    )
+
+        if not edited:
+            await _bot.send_message(
+                chat_id=order.user_id,
+                text=text,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+        return True
+    except TelegramForbiddenError:
+        logger.info("User %s blocked delayed-order notifications", order.user_id)
+        return True
+    except Exception as exc:
+        logger.error("Failed to notify user %s about delayed order: %s", order.user_id, exc)
+        return False
 
 
 def _get_user_friendly_error(error_message: str, lang: str = "ru") -> str:

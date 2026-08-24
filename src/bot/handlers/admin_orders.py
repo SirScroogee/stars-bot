@@ -2,7 +2,7 @@
 Handlers для управления заказами в админ-панели.
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from aiogram import Bot, F, Router
@@ -24,12 +24,11 @@ from src.bot.keyboards.admin import (
     get_order_confirm_action_keyboard,
     get_orders_problems_keyboard,
 )
-from src.db.models import Order
+from src.db.models import LavaPayment, Order
 from src.db.session import async_session_factory
-from src.core.queue import get_order_queue
+from src.services.order_runtime_service import enqueue_order_reliably
 from src.services.order_service import OrderService
 from src.services.user_service import UserService
-from src.workers.order_worker import get_order_worker
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +40,7 @@ _to_moscow_time = to_moscow_time
 
 
 async def _enqueue_order_for_retry(order_id: int) -> None:
-    worker = get_order_worker()
-    if worker and worker.is_running:
-        await worker.enqueue_order(order_id)
-    else:
-        await get_order_queue().enqueue(order_id)
+    await enqueue_order_reliably(order_id)
 
 
 class OrdersStates(StatesGroup):
@@ -229,6 +224,12 @@ async def callback_order_view(callback: CallbackQuery) -> None:
 
         # Сохраняем данные платежа
         payment_data = order.payment
+        lava_payment = None
+        if order.payment_provider == "lava":
+            lava_result = await session.execute(
+                select(LavaPayment).where(LavaPayment.order_id == order.id)
+            )
+            lava_payment = lava_result.scalar_one_or_none()
 
         # Ищем ID платежа пользователя из транзакций
         user_payment_id = None
@@ -246,6 +247,12 @@ async def callback_order_view(callback: CallbackQuery) -> None:
                     if len(parts) == 2:
                         user_payment_id = parts[1]
                         user_payment_type = "ton"
+                        break
+                elif tx.external_id.startswith("lava:"):
+                    parts = tx.external_id.split(":", 1)
+                    if len(parts) == 2:
+                        user_payment_id = parts[1]
+                        user_payment_type = "lava"
                         break
 
         # Фоллбэк для старых заказов
@@ -283,6 +290,8 @@ async def callback_order_view(callback: CallbackQuery) -> None:
         "balance": "💎 С баланса",
         "ton": "💎 TON",
         "cryptobot": "🤖 CryptoBot",
+        "platega": "🏦 СБП / Platega",
+        "lava": "🌋 Lava / СБП",
     }
 
     status_labels = {
@@ -338,7 +347,17 @@ async def callback_order_view(callback: CallbackQuery) -> None:
     if not is_balance_withdrawal:
         net_amount = float(order.price_usdt)
         # Для CryptoBot показываем комиссию
-        if order.payment_provider == "cryptobot":
+        if order.payment_provider == "lava" and lava_payment:
+            fee_rub = lava_payment.amount_rub - lava_payment.base_amount_rub
+            text += f"💵 Стоимость: <b>{float(lava_payment.amount_usdt):.2f} USDT</b>\n"
+            text += f"💳 К оплате: <b>{float(lava_payment.amount_rub):.2f} RUB</b>\n"
+            text += (
+                f"📊 Комиссия: <b>{float(fee_rub):.2f} RUB</b> "
+                f"({float(lava_payment.fee_percent):g}%)\n"
+            )
+            text += f"🆔 Invoice ID: <code>{lava_payment.provider_invoice_id or '—'}</code>\n"
+            text += f"🔖 Lava Order ID: <code>{lava_payment.provider_order_id}</code>"
+        elif order.payment_provider == "cryptobot":
             fee_percent = 3
             amount_with_fee = net_amount * 1.03
             fee_amount = amount_with_fee - net_amount
@@ -348,12 +367,20 @@ async def callback_order_view(callback: CallbackQuery) -> None:
         else:
             text += f"💵 Сумма: <b>{net_amount:.2f} USDT</b>\n"
         # ID платежа пользователя
-        if user_payment_id:
+        if user_payment_id and not (
+            order.payment_provider == "lava" and lava_payment
+        ):
             if user_payment_type == "cryptobot":
                 text += f"🆔 Invoice ID: <b><code>#IV{user_payment_id}</code></b>"
             elif user_payment_type == "ton":
                 text += f"🆔 Event ID: <b><code>{user_payment_id}</code></b>"
-        elif payment_data and payment_data.provider_tx_id:
+            elif user_payment_type == "lava":
+                text += f"🆔 Invoice ID: <b><code>{user_payment_id}</code></b>"
+        elif (
+            not (order.payment_provider == "lava" and lava_payment)
+            and payment_data
+            and payment_data.provider_tx_id
+        ):
             text += f"🆔 ID: <b><code>{payment_data.provider_tx_id}</code></b>"
     else:
         text += f"💎 Списано с баланса"
@@ -380,7 +407,11 @@ async def callback_order_view(callback: CallbackQuery) -> None:
 
     await callback.message.edit_text(
         text=text,
-        reply_markup=get_order_detail_keyboard(order_id, order.status),
+        reply_markup=get_order_detail_keyboard(
+            order_id,
+            order.status,
+            order.payment_provider,
+        ),
         parse_mode="HTML",
         link_preview_options=LinkPreviewOptions(is_disabled=True),
     )
@@ -586,6 +617,7 @@ async def callback_order_retry(callback: CallbackQuery) -> None:
         reply_markup=get_order_confirm_action_keyboard(order_id, "retry"),
         parse_mode="HTML",
     )
+    await callback.answer()
 
 
 @router.callback_query(F.data.regexp(r"^admin:orders:retry:confirm:\d+$"))
@@ -620,10 +652,10 @@ async def callback_orders_retry_all(callback: CallbackQuery) -> None:
 
     async with async_session_factory() as session:
         order_service = OrderService(session)
-        failed_orders = await order_service.get_failed_orders(limit=10000)
+        failed_orders = await order_service.get_bulk_retryable_failed_orders(limit=10000)
 
     if not failed_orders:
-        await callback.answer("Нет неудачных заказов", show_alert=True)
+        await callback.answer("Нет заказов, которые можно безопасно повторить", show_alert=True)
         return
 
     text = (
@@ -649,17 +681,13 @@ async def callback_orders_retry_all_confirm(callback: CallbackQuery, state: FSMC
 
     async with async_session_factory() as session:
         order_service = OrderService(session)
-        failed_orders = await order_service.get_failed_orders(limit=10000)
-        retry_order_ids = [
-            order.id for order in failed_orders
-            if order.payment_provider != "balance"
-        ]
-        count = await order_service.retry_all_failed()
+        retry_order_ids = await order_service.retry_all_failed()
         await session.commit()
 
     for order_id in retry_order_ids:
         await _enqueue_order_for_retry(order_id)
 
+    count = len(retry_order_ids)
     await callback.answer(f"✅ Повторено заказов: {count}", show_alert=True)
     logger.info(f"All failed orders retried by admin {callback.from_user.id}: {count}")
 
@@ -747,6 +775,19 @@ async def callback_order_refund(callback: CallbackQuery) -> None:
             await callback.answer("Можно вернуть только выполненные или неудачные заказы", show_alert=True)
             return
 
+    if order.payment_provider == "balance" and order.status == "completed":
+        refund_note = "Средства будут фактически зачислены на внутренний баланс бота."
+    elif order.payment_provider == "balance":
+        refund_note = (
+            "Средства уже возвращены автоматически при ошибке. "
+            "Повторного зачисления не будет; изменится только статус."
+        )
+    else:
+        refund_note = (
+            "Сначала выполните возврат в платежной системе. "
+            "Эта кнопка только фиксирует уже выполненный внешний возврат."
+        )
+
     text = (
         f"💸 <b>Вернуть деньги за заказ #{order_id}?</b>\n\n"
         f"<blockquote>"
@@ -754,8 +795,7 @@ async def callback_order_refund(callback: CallbackQuery) -> None:
         f"Количество: <b>{order.quantity:,}</b>\n"
         f"Сумма: <b>${order.price_usdt:.2f}</b>"
         f"</blockquote>\n\n"
-        "⚠️ Заказ будет помечен как «возврат». "
-        "Фактический возврат средств нужно выполнить вручную!"
+        f"⚠️ {refund_note}"
     )
 
     await callback.message.edit_text(
@@ -763,6 +803,7 @@ async def callback_order_refund(callback: CallbackQuery) -> None:
         reply_markup=get_order_confirm_action_keyboard(order_id, "do_refund"),
         parse_mode="HTML",
     )
+    await callback.answer()
 
 
 @router.callback_query(F.data.regexp(r"^admin:orders:do_refund:confirm:\d+$"))
@@ -775,11 +816,23 @@ async def callback_order_refund_confirm(callback: CallbackQuery) -> None:
 
     async with async_session_factory() as session:
         order_service = OrderService(session)
-        success = await order_service.set_refunded(order_id)
+        order = await order_service.get_order(order_id)
+        refund_result = None
+        if order and order.payment_provider == "balance":
+            refund_result = await order_service.refund_balance_order(order_id)
+            success = refund_result is not None
+        else:
+            success = await order_service.set_refunded(order_id)
         await session.commit()
 
         if success:
-            await callback.answer("✅ Заказ помечен как возврат", show_alert=True)
+            if refund_result == "balance_credited":
+                answer_text = "✅ Средства вернуты на баланс"
+            elif refund_result == "already_credited":
+                answer_text = "✅ Возврат уже был зачислен, статус обновлен"
+            else:
+                answer_text = "✅ Внешний возврат зафиксирован"
+            await callback.answer(answer_text, show_alert=True)
             logger.info(f"Order {order_id} refunded by admin {callback.from_user.id}")
         else:
             await callback.answer("❌ Не удалось оформить возврат", show_alert=True)

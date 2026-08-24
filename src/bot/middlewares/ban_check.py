@@ -55,6 +55,11 @@ class BanCheckMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: Dict[str, Any],
     ) -> Any:
+        # Never swallow an already completed monetary event. Business handlers
+        # still decide whether to deliver or refund it.
+        if isinstance(event, Message) and event.successful_payment:
+            return await handler(event, data)
+
         # Получаем user_id из события
         user_id = None
 

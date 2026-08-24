@@ -16,7 +16,7 @@ import secrets
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +24,7 @@ from src.db.models import (
     BalanceLedger,
     LedgerOperation,
     Order,
+    OrderAttempt,
     OrderStatus,
     PaymentProvider,
     ProductType,
@@ -33,6 +34,14 @@ from src.db.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+SAFE_BULK_RETRY_ERROR_CODES = {
+    "transaction_failed",
+    "transaction_timeout",
+    "unknown_error",
+    "processing_timeout",
+    "worker_exception",
+}
 
 
 class OrderService:
@@ -47,6 +56,33 @@ class OrderService:
 
     def __init__(self, session: AsyncSession):
         self._session = session
+
+    async def _finish_latest_attempt(
+        self,
+        order_id: int,
+        status: str,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        next_retry_at: datetime | None = None,
+    ) -> None:
+        result = await self._session.execute(
+            select(OrderAttempt)
+            .where(
+                OrderAttempt.order_id == order_id,
+                OrderAttempt.status == "processing",
+            )
+            .order_by(OrderAttempt.attempt_number.desc())
+            .limit(1)
+        )
+        attempt = result.scalar_one_or_none()
+        if not attempt:
+            return
+
+        attempt.status = status
+        attempt.error_code = error_code
+        attempt.error_message = error_message
+        attempt.finished_at = datetime.utcnow()
+        attempt.next_retry_at = next_retry_at
 
     @staticmethod
     def generate_order_key(
@@ -158,22 +194,44 @@ class OrderService:
         )
         return result.scalar_one_or_none()
 
-    async def set_processing(self, order_id: int) -> bool:
+    async def set_processing(
+        self,
+        order_id: int,
+        fragment_account_id: int | None = None,
+    ) -> bool:
         """
         Установить статус PROCESSING.
 
         Returns:
             True если статус обновлён, False если заказ уже не PENDING
         """
+        now = datetime.utcnow()
         result = await self._session.execute(
             update(Order)
             .where(Order.id == order_id, Order.status == OrderStatus.PENDING.value)
-            .values(status=OrderStatus.PROCESSING.value, updated_at=datetime.utcnow())
-            .returning(Order.id)
+            .values(
+                status=OrderStatus.PROCESSING.value,
+                attempt_count=Order.attempt_count + 1,
+                processing_started_at=now,
+                last_attempt_at=now,
+                next_retry_at=None,
+                last_fragment_account_id=fragment_account_id,
+                updated_at=now,
+            )
+            .returning(Order.id, Order.attempt_count)
         )
-        updated = result.scalar_one_or_none()
+        updated = result.one_or_none()
 
         if updated:
+            self._session.add(
+                OrderAttempt(
+                    order_id=order_id,
+                    attempt_number=updated.attempt_count,
+                    fragment_account_id=fragment_account_id,
+                    status="processing",
+                    started_at=now,
+                )
+            )
             logger.info(f"Order {order_id} -> PROCESSING")
             return True
 
@@ -201,6 +259,10 @@ class OrderService:
             "status": OrderStatus.COMPLETED.value,
             "fragment_tx_id": fragment_tx_id,
             "completed_at": datetime.utcnow(),
+            "processing_started_at": None,
+            "next_retry_at": None,
+            "last_error_code": None,
+            "error_message": None,
             "updated_at": datetime.utcnow(),
         }
         if fragment_ton_spent is not None:
@@ -215,6 +277,7 @@ class OrderService:
         updated = result.scalar_one_or_none()
 
         if updated:
+            await self._finish_latest_attempt(order_id, "completed")
             logger.info(f"Order {order_id} -> COMPLETED (tx={fragment_tx_id}, ton={fragment_ton_spent})")
             return True
 
@@ -225,6 +288,7 @@ class OrderService:
         self,
         order_id: int,
         error_message: str,
+        error_code: str | None = None,
     ) -> bool:
         """
         Установить статус FAILED.
@@ -238,10 +302,16 @@ class OrderService:
         """
         result = await self._session.execute(
             update(Order)
-            .where(Order.id == order_id, Order.status == OrderStatus.PROCESSING.value)
+            .where(
+                Order.id == order_id,
+                Order.status.in_((OrderStatus.PENDING.value, OrderStatus.PROCESSING.value)),
+            )
             .values(
                 status=OrderStatus.FAILED.value,
                 error_message=error_message,
+                last_error_code=error_code,
+                processing_started_at=None,
+                next_retry_at=None,
                 updated_at=datetime.utcnow(),
             )
             .returning(Order.id)
@@ -249,31 +319,133 @@ class OrderService:
         updated = result.scalar_one_or_none()
 
         if updated:
+            await self._finish_latest_attempt(
+                order_id,
+                "failed",
+                error_code=error_code,
+                error_message=error_message,
+            )
             logger.info(f"Order {order_id} -> FAILED: {error_message}")
             return True
 
         logger.warning(f"Order {order_id} is not PROCESSING, cannot set FAILED")
         return False
 
-    async def return_to_pending(self, order_id: int) -> bool:
+    async def return_to_pending(
+        self,
+        order_id: int,
+        *,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        next_retry_at: datetime | None = None,
+        count_retry: bool = False,
+    ) -> bool:
         """
         Вернуть заказ в очередь (PROCESSING -> PENDING).
 
         Используется при retry после временных ошибок.
         """
+        values = {
+            "status": OrderStatus.PENDING.value,
+            "error_message": error_message,
+            "last_error_code": error_code,
+            "processing_started_at": None,
+            "next_retry_at": next_retry_at,
+            "updated_at": datetime.utcnow(),
+        }
+        if count_retry:
+            values["retry_count"] = Order.retry_count + 1
+
         result = await self._session.execute(
             update(Order)
             .where(Order.id == order_id, Order.status == OrderStatus.PROCESSING.value)
-            .values(status=OrderStatus.PENDING.value, updated_at=datetime.utcnow())
+            .values(**values)
             .returning(Order.id)
         )
         updated = result.scalar_one_or_none()
 
         if updated:
+            await self._finish_latest_attempt(
+                order_id,
+                "retrying",
+                error_code=error_code,
+                error_message=error_message,
+                next_retry_at=next_retry_at,
+            )
             logger.info(f"Order {order_id} -> PENDING (retry)")
             return True
 
         return False
+
+    async def record_pending_deferral(
+        self,
+        order_id: int,
+        *,
+        error_code: str,
+        error_message: str,
+        next_retry_at: datetime,
+        count_retry: bool = False,
+    ) -> bool:
+        """Persist a processing attempt that could not start at all."""
+        result = await self._session.execute(
+            select(Order).where(Order.id == order_id).with_for_update()
+        )
+        order = result.scalar_one_or_none()
+        if not order or order.status != OrderStatus.PENDING.value:
+            return False
+
+        now = datetime.utcnow()
+        order.attempt_count += 1
+        if count_retry:
+            order.retry_count += 1
+        order.last_attempt_at = now
+        order.next_retry_at = next_retry_at
+        order.last_error_code = error_code
+        order.error_message = error_message
+        order.updated_at = now
+        self._session.add(
+            OrderAttempt(
+                order_id=order.id,
+                attempt_number=order.attempt_count,
+                status="deferred",
+                error_code=error_code,
+                error_message=error_message,
+                started_at=now,
+                finished_at=now,
+                next_retry_at=next_retry_at,
+            )
+        )
+        return True
+
+    async def mark_admin_alerted(self, order_id: int, *, critical: bool = False) -> bool:
+        field = Order.critical_alerted_at if critical else Order.admin_alerted_at
+        result = await self._session.execute(
+            update(Order)
+            .where(Order.id == order_id, field.is_(None))
+            .values({field: datetime.utcnow()})
+            .returning(Order.id)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def mark_user_delay_notified(self, order_id: int) -> bool:
+        result = await self._session.execute(
+            update(Order)
+            .where(Order.id == order_id, Order.user_delay_notified_at.is_(None))
+            .values(user_delay_notified_at=datetime.utcnow())
+            .returning(Order.id)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def release_admin_alert(self, order_id: int, *, critical: bool = False) -> None:
+        field = Order.critical_alerted_at if critical else Order.admin_alerted_at
+        await self._session.execute(
+            update(Order).where(Order.id == order_id).values({field: None})
+        )
+
+    async def release_user_delay_notification(self, order_id: int) -> None:
+        await self._session.execute(
+            update(Order).where(Order.id == order_id).values(user_delay_notified_at=None)
+        )
 
     async def credit_user_balance(
         self,
@@ -416,17 +588,25 @@ class OrderService:
 
         Используется для восстановления после падений.
         """
-        from datetime import timedelta
-
         threshold = datetime.utcnow() - timedelta(minutes=timeout_minutes)
 
         result = await self._session.execute(
             select(Order)
             .where(
                 Order.status == OrderStatus.PROCESSING.value,
-                Order.updated_at < threshold,
+                func.coalesce(Order.processing_started_at, Order.updated_at) < threshold,
             )
-            .order_by(Order.updated_at)
+            .order_by(func.coalesce(Order.processing_started_at, Order.updated_at))
+        )
+        return list(result.scalars().all())
+
+    async def get_active_orders_for_monitoring(self, limit: int = 500) -> list[Order]:
+        """Return paid orders that have not reached a terminal status."""
+        result = await self._session.execute(
+            select(Order)
+            .where(Order.status.in_((OrderStatus.PENDING.value, OrderStatus.PROCESSING.value)))
+            .order_by(Order.created_at)
+            .limit(limit)
         )
         return list(result.scalars().all())
 
@@ -461,8 +641,6 @@ class OrderService:
 
     async def get_orders_count(self, status_filter: str | None = None) -> int:
         """Получить количество заказов с фильтрацией."""
-        from sqlalchemy import func
-
         query = select(func.count(Order.id))
 
         if status_filter and status_filter != "all":
@@ -486,8 +664,6 @@ class OrderService:
         Returns:
             Список найденных заказов
         """
-        from sqlalchemy import or_
-
         search_query = select(Order)
 
         # Если query - число, ищем по user_id или order_id
@@ -549,11 +725,9 @@ class OrderService:
 
         Включает:
         - Неудачные (failed)
+        - Ожидающие (pending) больше timeout_minutes
         - Застрявшие в processing больше timeout_minutes
         """
-        from datetime import timedelta
-        from sqlalchemy import or_
-
         threshold = datetime.utcnow() - timedelta(minutes=stuck_timeout_minutes)
 
         result = await self._session.execute(
@@ -561,7 +735,11 @@ class OrderService:
             .where(
                 or_(
                     Order.status == OrderStatus.FAILED.value,
-                    (Order.status == OrderStatus.PROCESSING.value) & (Order.updated_at < threshold),
+                    (Order.status == OrderStatus.PENDING.value) & (Order.created_at < threshold),
+                    (
+                        (Order.status == OrderStatus.PROCESSING.value)
+                        & (func.coalesce(Order.processing_started_at, Order.updated_at) < threshold)
+                    ),
                 )
             )
             .order_by(Order.created_at.desc())
@@ -581,9 +759,6 @@ class OrderService:
         Returns:
             dict со статистикой
         """
-        from datetime import timedelta
-        from sqlalchemy import func
-
         # Определяем временной фильтр
         time_filter = None
         if period == "24h":
@@ -685,6 +860,90 @@ class OrderService:
         logger.warning(f"Order {order_id} cannot be refunded")
         return False
 
+    async def refund_balance_order(self, order_id: int) -> str | None:
+        """Refund a balance-paid order exactly once and record the balance change."""
+        order_result = await self._session.execute(
+            select(Order).where(Order.id == order_id).with_for_update()
+        )
+        order = order_result.scalar_one_or_none()
+        if (
+            not order
+            or order.payment_provider != PaymentProvider.BALANCE.value
+            or order.status not in (OrderStatus.COMPLETED.value, OrderStatus.FAILED.value)
+        ):
+            logger.warning("Balance order %s cannot be refunded", order_id)
+            return None
+
+        # Failed balance orders are refunded by OrderWorker when failure is finalized.
+        # The admin action only records the terminal REFUNDED state in that case.
+        if order.status == OrderStatus.FAILED.value:
+            order.status = OrderStatus.REFUNDED.value
+            order.updated_at = datetime.utcnow()
+            logger.info("Failed balance order %s marked REFUNDED without duplicate credit", order_id)
+            return "already_credited"
+
+        user_result = await self._session.execute(
+            select(User).where(User.id == order.user_id).with_for_update()
+        )
+        user = user_result.scalar_one_or_none()
+        if not user:
+            logger.error("User %s not found for balance refund of order %s", order.user_id, order_id)
+            return None
+
+        stars_before = user.balance_stars
+        usdt_before = user.balance_usdt
+        premium_before = user.balance_premium_months
+        refund_stars = Decimal("0")
+        refund_usdt = Decimal("0")
+        refund_premium = 0
+
+        if order.price_usdt > 0:
+            refund_usdt = order.price_usdt
+            user.balance_usdt += refund_usdt
+        elif order.product_type == ProductType.STARS.value:
+            refund_stars = Decimal(order.quantity)
+            user.balance_stars += refund_stars
+        elif order.product_type == ProductType.PREMIUM.value:
+            refund_premium = order.quantity
+            user.balance_premium_months += refund_premium
+        else:
+            logger.error("Unsupported balance refund asset for order %s", order_id)
+            return None
+
+        description = f"Admin refund for order #{order_id}"
+        transaction = Transaction(
+            user_id=order.user_id,
+            order_id=order.id,
+            type=TransactionType.REFUND.value,
+            amount_stars=refund_stars,
+            amount_usdt=refund_usdt,
+            description=description,
+            external_id=f"order_refund:{order_id}",
+        )
+        self._session.add(transaction)
+        await self._session.flush()
+        self._session.add(
+            BalanceLedger(
+                user_id=order.user_id,
+                transaction_id=transaction.id,
+                operation=LedgerOperation.CREDIT.value,
+                amount_stars=refund_stars,
+                amount_usdt=refund_usdt,
+                amount_premium=refund_premium,
+                balance_stars_before=stars_before,
+                balance_stars_after=user.balance_stars,
+                balance_usdt_before=usdt_before,
+                balance_usdt_after=user.balance_usdt,
+                balance_premium_before=premium_before,
+                balance_premium_after=user.balance_premium_months,
+                description=description,
+            )
+        )
+        order.status = OrderStatus.REFUNDED.value
+        order.updated_at = datetime.utcnow()
+        logger.info("Balance credited and order %s marked REFUNDED", order_id)
+        return "balance_credited"
+
     async def retry_order(self, order_id: int, debit_balance: bool = True) -> bool:
         """
         Повторить неудачный заказ (FAILED -> PENDING).
@@ -692,17 +951,26 @@ class OrderService:
         Returns:
             True если статус обновлён
         """
-        order = await self.get_order(order_id)
+        order_result = await self._session.execute(
+            select(Order).where(Order.id == order_id).with_for_update()
+        )
+        order = order_result.scalar_one_or_none()
         if not order:
             logger.warning(f"Order {order_id} not found, cannot retry")
             return False
 
         if order.status == OrderStatus.PROCESSING.value:
             processing_timeout = datetime.utcnow() - timedelta(minutes=10)
-            if order.updated_at and order.updated_at >= processing_timeout:
+            processing_since = order.processing_started_at or order.updated_at
+            if processing_since and processing_since >= processing_timeout:
                 logger.warning(f"Order {order_id} is still PROCESSING, cannot retry before timeout")
                 return False
-            return await self.return_to_pending(order_id)
+            return await self.return_to_pending(
+                order_id,
+                error_code="admin_retry",
+                error_message="Returned to queue by administrator",
+                next_retry_at=datetime.utcnow(),
+            )
 
         if order.status != OrderStatus.FAILED.value:
             logger.warning(f"Order {order_id} is not FAILED or PROCESSING, cannot retry")
@@ -717,11 +985,23 @@ class OrderService:
                 select(User).where(User.id == order.user_id).with_for_update()
             )
             user = user_result.scalar_one_or_none()
-            if not user or user.balance_usdt < order.price_usdt:
-                logger.warning(f"User {order.user_id} has insufficient USDT balance to retry order {order_id}")
+            if not user:
                 return False
-
-            user.balance_usdt -= order.price_usdt
+            if order.price_usdt > 0:
+                if user.balance_usdt < order.price_usdt:
+                    logger.warning(f"User {order.user_id} has insufficient USDT balance to retry order {order_id}")
+                    return False
+                user.balance_usdt -= order.price_usdt
+            elif order.product_type == ProductType.STARS.value:
+                if user.balance_stars < order.quantity:
+                    logger.warning(f"User {order.user_id} has insufficient Stars balance to retry order {order_id}")
+                    return False
+                user.balance_stars -= Decimal(order.quantity)
+            elif order.product_type == ProductType.PREMIUM.value:
+                if user.balance_premium_months < order.quantity:
+                    logger.warning(f"User {order.user_id} has insufficient Premium balance to retry order {order_id}")
+                    return False
+                user.balance_premium_months -= order.quantity
 
         result = await self._session.execute(
             update(Order)
@@ -729,6 +1009,13 @@ class OrderService:
             .values(
                 status=OrderStatus.PENDING.value,
                 error_message=None,
+                last_error_code=None,
+                processing_started_at=None,
+                next_retry_at=None,
+                admin_alerted_at=None,
+                critical_alerted_at=None,
+                user_delay_notified_at=None,
+                retry_count=0,
                 updated_at=datetime.utcnow(),
             )
             .returning(Order.id)
@@ -742,28 +1029,50 @@ class OrderService:
         logger.warning(f"Order {order_id} is not FAILED, cannot retry")
         return False
 
-    async def retry_all_failed(self) -> int:
+    async def retry_all_failed(self) -> list[int]:
         """
         Повторить все неудачные заказы.
 
         Returns:
-            Количество обновлённых заказов
+            ID обновлённых заказов
         """
         result = await self._session.execute(
             update(Order)
             .where(
                 Order.status == OrderStatus.FAILED.value,
                 Order.payment_provider != PaymentProvider.BALANCE.value,
+                Order.last_error_code.in_(SAFE_BULK_RETRY_ERROR_CODES),
             )
             .values(
                 status=OrderStatus.PENDING.value,
                 error_message=None,
+                last_error_code=None,
+                processing_started_at=None,
+                next_retry_at=None,
+                admin_alerted_at=None,
+                critical_alerted_at=None,
+                user_delay_notified_at=None,
+                retry_count=0,
                 updated_at=datetime.utcnow(),
             )
+            .returning(Order.id)
         )
-        count = result.rowcount
-        logger.info(f"Retried {count} failed orders")
-        return count
+        order_ids = list(result.scalars().all())
+        logger.info(f"Retried {len(order_ids)} failed orders")
+        return order_ids
+
+    async def get_bulk_retryable_failed_orders(self, limit: int = 10000) -> list[Order]:
+        result = await self._session.execute(
+            select(Order)
+            .where(
+                Order.status == OrderStatus.FAILED.value,
+                Order.payment_provider != PaymentProvider.BALANCE.value,
+                Order.last_error_code.in_(SAFE_BULK_RETRY_ERROR_CODES),
+            )
+            .order_by(Order.created_at)
+            .limit(limit)
+        )
+        return list(result.scalars().all())
 
     async def get_user_orders(self, user_id: int, limit: int = 50) -> list[Order]:
         """Получить заказы пользователя."""

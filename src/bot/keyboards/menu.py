@@ -16,6 +16,7 @@ class MenuCallback:
     PROFILE = "menu:profile"
     REFERRAL = "menu:referral"
     SUPPORT = "menu:support"
+    GIVEAWAYS = "menu:giveaways"
     BACK_TO_MENU = "menu:main"
 
 
@@ -23,6 +24,7 @@ def get_main_menu_keyboard(
     lang: str = "ru",
     news_channel_url: str | None = None,
     is_admin: bool = False,
+    has_active_giveaways: bool = False,
 ) -> InlineKeyboardMarkup:
     """Получить клавиатуру главного меню."""
     service_buttons = []
@@ -55,8 +57,7 @@ def get_main_menu_keyboard(
         )
     )
 
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+    rows = [
             # Строка 1: Купить звёзды | Купить Premium
             [
                 InlineKeyboardButton(
@@ -78,12 +79,19 @@ def get_main_menu_keyboard(
                     style="primary",
                 ),
             ],
-            # Строка 3: Чеки | Профиль
-            profile_row,
-            # Строка 4: Новости | Поддержка
-            service_buttons,
-        ]
-    )
+    ]
+    if has_active_giveaways:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=t("menu.buttons.giveaways", lang),
+                    callback_data=MenuCallback.GIVEAWAYS,
+                    style="danger",
+                )
+            ]
+        )
+    rows.extend([profile_row, service_buttons])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def get_back_button(lang: str = "ru") -> InlineKeyboardMarkup:

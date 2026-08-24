@@ -1382,9 +1382,9 @@ async def _check_single_account(account_id: int, preflight_username: str | None 
             # 3. Определяем итоговый статус
             if result["wallet_valid"] and result["session_valid"]:
                 result["success"] = True
-                # Если аккаунт был неактивен, активируем его
+                # Полностью успешная проверка также очищает старую ошибку.
                 account = await service.get_account(account_id)
-                if account and account.status == FragmentAccountStatus.SESSION_EXPIRED.value:
+                if account:
                     await service.set_status(account_id, FragmentAccountStatus.ACTIVE)
                     account.is_active = True
 

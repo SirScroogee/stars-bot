@@ -985,6 +985,11 @@ class FragmentClient:
             await self._connector.close()
             logger.debug("FragmentClient connector closed")
 
+        if self._ton_client:
+            await self._ton_client.close_session()
+            self._ton_client = None
+            logger.debug("TonapiClient session closed")
+
     async def __aenter__(self) -> "FragmentClient":
         return self
 

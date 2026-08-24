@@ -51,9 +51,12 @@ htmlcov/
 # Logs
 *.log
 logs/
+.deploy/
 
 # Local scratch scripts
 testt.py
+launch_test.txt
+pyver_*.txt
 
 # Database
 *.db

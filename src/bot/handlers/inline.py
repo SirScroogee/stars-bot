@@ -21,6 +21,7 @@ from src.db.models import Check
 from src.db.session import async_session_factory
 from src.locales import t, get_user_locale
 from src.services.user_service import UserService
+from src.services.user_registration_service import finalize_new_user_registration
 from src.services.bot_settings_service import get_bot_settings
 from src.services.rates_service import (
     get_rates as get_rates_from_service,
@@ -117,12 +118,18 @@ async def inline_calculator(inline_query: InlineQuery) -> None:
             lang = db_user.language_code or lang
         else:
             # Если пользователя нет в БД, создаём его
-            db_user, _ = await user_service.get_or_create_user(
+            db_user, created = await user_service.get_or_create_user(
                 user_id=user.id,
                 username=user.username,
                 language_code=lang,
             )
             await session.commit()
+            if created:
+                await finalize_new_user_registration(
+                    user_id=user.id,
+                    username=user.username,
+                    language=db_user.language_code or lang,
+                )
 
     # Получаем username бота для ссылок
     bot_info = await inline_query.bot.get_me()

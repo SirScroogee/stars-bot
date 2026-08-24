@@ -44,7 +44,12 @@ class OrderQueue(ABC):
     """Абстрактный интерфейс очереди заказов."""
 
     @abstractmethod
-    async def enqueue(self, order_id: int, max_retries: int = 3) -> None:
+    async def enqueue(
+        self,
+        order_id: int,
+        max_retries: int = 3,
+        retry_count: int = 0,
+    ) -> None:
         """Добавить заказ в очередь."""
         pass
 
@@ -62,13 +67,19 @@ class OrderQueue(ABC):
         pass
 
     @abstractmethod
-    async def requeue(self, item: QueueItem, delay: float = 0) -> None:
+    async def requeue(
+        self,
+        item: QueueItem,
+        delay: float = 0,
+        count_retry: bool = True,
+    ) -> None:
         """
         Вернуть заказ в очередь для повторной обработки.
 
         Args:
             item: Элемент очереди
             delay: Задержка перед повторной обработкой (секунды)
+            count_retry: Увеличить счётчик технических retry
         """
         pass
 
@@ -81,6 +92,10 @@ class OrderQueue(ABC):
     async def clear(self) -> None:
         """Очистить очередь."""
         pass
+
+    async def get_queued_order_ids(self) -> set[int]:
+        """Return order IDs currently owned by the queue."""
+        return set()
 
 
 class InMemoryQueue(OrderQueue):
@@ -98,10 +113,20 @@ class InMemoryQueue(OrderQueue):
         self._event = asyncio.Event()
         self._lock = asyncio.Lock()
         self._delayed_tasks: set[asyncio.Task] = set()  # Для отложенных requeue
+        self._delayed_order_ids: set[int] = set()
 
-    async def enqueue(self, order_id: int, max_retries: int = 3) -> None:
+    async def enqueue(
+        self,
+        order_id: int,
+        max_retries: int = 3,
+        retry_count: int = 0,
+    ) -> None:
         async with self._lock:
-            item = QueueItem(order_id=order_id, max_retries=max_retries)
+            item = QueueItem(
+                order_id=order_id,
+                retry_count=retry_count,
+                max_retries=max_retries,
+            )
             self._queue.append(item)
             self._event.set()
             logger.debug(f"Order {order_id} enqueued (size={len(self._queue)})")
@@ -134,17 +159,24 @@ class InMemoryQueue(OrderQueue):
 
         return None
 
-    async def requeue(self, item: QueueItem, delay: float = 0) -> None:
+    async def requeue(
+        self,
+        item: QueueItem,
+        delay: float = 0,
+        count_retry: bool = True,
+    ) -> None:
         if delay > 0:
             # Не блокируем вызывающего — планируем отложенное добавление
-            task = asyncio.create_task(self._delayed_requeue(item, delay))
+            self._delayed_order_ids.add(item.order_id)
+            task = asyncio.create_task(self._delayed_requeue(item, delay, count_retry))
             self._delayed_tasks.add(task)
             task.add_done_callback(self._delayed_tasks.discard)
             logger.debug(f"Order {item.order_id} scheduled for requeue in {delay}s")
             return
 
         async with self._lock:
-            item.retry_count += 1
+            if count_retry:
+                item.retry_count += 1
             item.enqueued_at = datetime.utcnow()
             self._queue.append(item)
             self._event.set()
@@ -153,28 +185,47 @@ class InMemoryQueue(OrderQueue):
                 f"(retry={item.retry_count}, size={len(self._queue)})"
             )
 
-    async def _delayed_requeue(self, item: QueueItem, delay: float) -> None:
+    async def _delayed_requeue(
+        self,
+        item: QueueItem,
+        delay: float,
+        count_retry: bool,
+    ) -> None:
         """Отложенное добавление в очередь (не блокирует caller)."""
-        await asyncio.sleep(delay)
-        async with self._lock:
-            item.retry_count += 1
-            item.enqueued_at = datetime.utcnow()
-            self._queue.append(item)
-            self._event.set()
-            logger.debug(
-                f"Order {item.order_id} requeued after {delay}s delay "
-                f"(retry={item.retry_count}, size={len(self._queue)})"
-            )
+        try:
+            await asyncio.sleep(delay)
+            async with self._lock:
+                if count_retry:
+                    item.retry_count += 1
+                item.enqueued_at = datetime.utcnow()
+                self._queue.append(item)
+                self._event.set()
+                logger.debug(
+                    f"Order {item.order_id} requeued after {delay}s delay "
+                    f"(retry={item.retry_count}, size={len(self._queue)})"
+                )
+        finally:
+            self._delayed_order_ids.discard(item.order_id)
 
     async def size(self) -> int:
         async with self._lock:
             return len(self._queue)
 
     async def clear(self) -> None:
+        delayed_tasks = list(self._delayed_tasks)
+        for task in delayed_tasks:
+            task.cancel()
+        if delayed_tasks:
+            await asyncio.gather(*delayed_tasks, return_exceptions=True)
         async with self._lock:
             self._queue.clear()
+            self._delayed_order_ids.clear()
             self._event.clear()
             logger.debug("Queue cleared")
+
+    async def get_queued_order_ids(self) -> set[int]:
+        async with self._lock:
+            return {item.order_id for item in self._queue} | set(self._delayed_order_ids)
 
 
 # Глобальный экземпляр очереди (можно заменить на Redis в продакшене)
@@ -302,13 +353,18 @@ class RedisQueue(OrderQueue):
 
         logger.info("RedisQueue closed")
 
-    async def enqueue(self, order_id: int, max_retries: int = 3) -> None:
+    async def enqueue(
+        self,
+        order_id: int,
+        max_retries: int = 3,
+        retry_count: int = 0,
+    ) -> None:
         """Добавить заказ в очередь."""
         await self._ensure_connected()
 
         item = QueueItem(
             order_id=order_id,
-            retry_count=0,
+            retry_count=retry_count,
             max_retries=max_retries,
             enqueued_at=datetime.utcnow(),
         )
@@ -354,7 +410,12 @@ class RedisQueue(OrderQueue):
         logger.debug(f"Order {item.order_id} dequeued from Redis")
         return item
 
-    async def requeue(self, item: QueueItem, delay: float = 0) -> None:
+    async def requeue(
+        self,
+        item: QueueItem,
+        delay: float = 0,
+        count_retry: bool = True,
+    ) -> None:
         """
         Вернуть элемент в очередь для повторной обработки.
 
@@ -365,8 +426,8 @@ class RedisQueue(OrderQueue):
         # Удалить из processing
         await self._redis.hdel(self.PROCESSING_KEY, str(item.order_id))
 
-        # Увеличить счётчик попыток
-        item.retry_count += 1
+        if count_retry:
+            item.retry_count += 1
         item.enqueued_at = datetime.utcnow()
 
         item_json = self._serialize_item(item)
@@ -420,6 +481,20 @@ class RedisQueue(OrderQueue):
         await self._ensure_connected()
         items_dict = await self._redis.hgetall(self.PROCESSING_KEY)
         return [self._deserialize_item(json_str) for json_str in items_dict.values()]
+
+    async def get_queued_order_ids(self) -> set[int]:
+        """Return IDs present in main, delayed, or processing storage."""
+        await self._ensure_connected()
+        main_items = await self._redis.lrange(self.MAIN_QUEUE_KEY, 0, -1)
+        delayed_items = await self._redis.zrange(self.DELAYED_SET_KEY, 0, -1)
+        processing_items = await self._redis.hvals(self.PROCESSING_KEY)
+        order_ids: set[int] = set()
+        for raw_item in (*main_items, *delayed_items, *processing_items):
+            try:
+                order_ids.add(self._deserialize_item(raw_item).order_id)
+            except Exception:
+                logger.warning("Skipping malformed Redis order queue item during inspection")
+        return order_ids
 
     async def _process_delayed_queue(self) -> None:
         """

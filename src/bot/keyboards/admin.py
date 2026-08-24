@@ -39,6 +39,8 @@ class AdminCallback:
     PROMO = "admin:promo"
     BROADCAST = "admin:broadcast"
     SETTINGS = "admin:settings"
+    GIVEAWAYS = "admin:giveaways"
+    GIFTS = "admin:gifts"
     LOGS = "admin:logs"
     CLOSE = "admin:close"
     BACK = "admin:back"
@@ -91,10 +93,12 @@ class AdminCallback:
     SETTINGS_PAYMENTS = "admin:settings:payments"  # Способы оплаты
     SETTINGS_PAYMENT_CRYPTOBOT = "admin:settings:payment:cryptobot"  # Настройки CryptoBot
     SETTINGS_PAYMENT_TON = "admin:settings:payment:ton"  # Настройки TON
-    SETTINGS_PAYMENT_PLATEGA = "admin:settings:payment:platega"  # Настройки СБП Platega
+    SETTINGS_PAYMENT_PLATEGA = "admin:settings:payment:platega"  # Настройки Platega
+    SETTINGS_PAYMENT_LAVA = "admin:settings:payment:lava"  # Настройки Lava
     SETTINGS_REFERRAL = "admin:settings:referral"
     SETTINGS_SUPPORT = "admin:settings:support"
     SETTINGS_MEDIA = "admin:settings:media"
+    SETTINGS_SUBSCRIPTION = "admin:settings:subscription"
     SETTINGS_BACK = "admin:settings:back"
     SETTINGS_CANCEL = "admin:settings:cancel"
 
@@ -198,6 +202,20 @@ def get_admin_menu_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text="🎁 Промокоды",
                     callback_data=AdminCallback.PROMO,
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🎁 Подарить подарок",
+                    callback_data=AdminCallback.GIFTS,
+                    style="success",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🎉 Розыгрыши",
+                    callback_data=AdminCallback.GIVEAWAYS,
+                    style="danger",
                 ),
             ],
             [
@@ -406,9 +424,9 @@ def get_logs_events_keyboard(settings: dict, page: int = 0) -> InlineKeyboardMar
 
     # Группы событий для удобства
     event_groups = {
-        "errors": ["error", "order_error"],
-        "payments": ["deposit"],
-        "orders": ["order_completed", "order_failed"],
+        "errors": ["error", "order_error", "order_delayed", "order_critical"],
+        "payments": ["deposit", "payment_completed"],
+        "orders": ["order_created", "order_completed", "order_failed"],
         "checks": ["check_created"],
         "promo": ["promo_created"],
         "admin": ["admin_login", "admin_action", "user_banned"],
@@ -420,7 +438,11 @@ def get_logs_events_keyboard(settings: dict, page: int = 0) -> InlineKeyboardMar
     event_names = {
         "error": "Ошибки",
         "order_error": "Ошибки заказов",
+        "order_delayed": "Задержка заказа",
+        "order_critical": "Заказ больше часа",
         "deposit": "Пополнение",
+        "payment_completed": "Оплата заказа",
+        "order_created": "Заказ создан",
         "order_completed": "Заказ выполнен",
         "order_failed": "Ошибка заказа",
         "check_created": "Создание чека",
@@ -836,6 +858,10 @@ def get_settings_menu_keyboard(settings: dict) -> InlineKeyboardMarkup:
                     text="Медиа",
                     callback_data=AdminCallback.SETTINGS_MEDIA,
                 ),
+                InlineKeyboardButton(
+                    text="ОП",
+                    callback_data=AdminCallback.SETTINGS_SUBSCRIPTION,
+                ),
             ],
             [
                 InlineKeyboardButton(
@@ -898,6 +924,45 @@ def get_settings_support_keyboard(settings: dict) -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+def get_settings_subscription_keyboard(
+    settings: dict,
+    bot_username: str | None = None,
+    channels: list | None = None,
+) -> InlineKeyboardMarkup:
+    """Клавиатура настроек обязательной подписки."""
+    buttons: list[list[InlineKeyboardButton]] = []
+
+    if bot_username:
+        buttons.append([
+            InlineKeyboardButton(
+                text="Добавить бота в админы канала",
+                url=f"https://t.me/{bot_username}?startchannel&admin=invite_users",
+            ),
+        ])
+
+    if channels:
+        for channel in channels:
+            title = channel.channel_title or str(channel.channel_id)
+            if len(title) > 32:
+                title = title[:29] + "..."
+            marker = "✅" if str(settings.get("required_subscription_channel") or "") == str(channel.channel_id) else "📢"
+            buttons.append([
+                InlineKeyboardButton(
+                    text=f"{marker} {title}",
+                    callback_data=f"admin:settings:subscription:select:{channel.id}",
+                ),
+            ])
+
+    buttons.append([
+        InlineKeyboardButton(
+            text="◀️ Назад",
+            callback_data=AdminCallback.SETTINGS_BACK,
+        ),
+    ])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def get_settings_stars_keyboard(settings: dict) -> InlineKeyboardMarkup:
@@ -1050,8 +1115,14 @@ def get_settings_payments_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="🏦 СБП",
+                    text="🏦 Platega",
                     callback_data=AdminCallback.SETTINGS_PAYMENT_PLATEGA,
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🌋 Lava",
+                    callback_data=AdminCallback.SETTINGS_PAYMENT_LAVA,
                 ),
             ],
             [
@@ -1117,7 +1188,7 @@ def get_settings_ton_keyboard() -> InlineKeyboardMarkup:
 
 
 def get_settings_platega_keyboard(enabled: bool = False) -> InlineKeyboardMarkup:
-    """Клавиатура настроек СБП Platega."""
+    """Клавиатура настроек Platega."""
     toggle_text = "Выключить" if enabled else "Включить"
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -1147,9 +1218,66 @@ def get_settings_platega_keyboard(enabled: bool = False) -> InlineKeyboardMarkup
             ],
             [
                 InlineKeyboardButton(
+                    text="📊 Комиссия",
+                    callback_data="admin:settings:edit:payment_fee_platega",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
                     text="◀️ Назад",
                     callback_data=AdminCallback.SETTINGS_PAYMENTS,
                 ),
+            ],
+        ]
+    )
+
+
+def get_settings_lava_keyboard(enabled: bool = False) -> InlineKeyboardMarkup:
+    """Клавиатура настроек Lava Business API."""
+    toggle_text = "Выключить" if enabled else "Включить"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=toggle_text,
+                    callback_data="admin:settings:lava:toggle",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🏪 Shop ID",
+                    callback_data="admin:settings:edit:lava_shop_id",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔐 Secret Key",
+                    callback_data="admin:settings:edit:lava_secret_key",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🔑 Additional Key",
+                    callback_data="admin:settings:edit:lava_additional_key",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⏱ Автопроверка",
+                    callback_data="admin:settings:edit:lava_poll_interval_seconds",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="📊 Комиссия",
+                    callback_data="admin:settings:edit:payment_fee_lava",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="◀️ Назад",
+                    callback_data=AdminCallback.SETTINGS_PAYMENTS,
+                )
             ],
         ]
     )
@@ -2322,7 +2450,11 @@ def get_orders_list_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def get_order_detail_keyboard(order_id: int, status: str) -> InlineKeyboardMarkup:
+def get_order_detail_keyboard(
+    order_id: int,
+    status: str,
+    payment_provider: str | None = None,
+) -> InlineKeyboardMarkup:
     """Клавиатура детального просмотра заказа."""
     buttons = []
 
@@ -2334,9 +2466,14 @@ def get_order_detail_keyboard(order_id: int, status: str) -> InlineKeyboardMarku
                 callback_data=f"admin:orders:retry:{order_id}",
             ),
         ])
+        refund_label = (
+            "💸 Подтвердить возврат"
+            if payment_provider == "balance"
+            else "💸 Отметить возврат"
+        )
         buttons.append([
             InlineKeyboardButton(
-                text="💸 Вернуть деньги",
+                text=refund_label,
                 callback_data=f"admin:orders:refund:{order_id}",
             ),
         ])
@@ -2348,9 +2485,14 @@ def get_order_detail_keyboard(order_id: int, status: str) -> InlineKeyboardMarku
             ),
         ])
     elif status == "completed":
+        refund_label = (
+            "💸 Вернуть на баланс"
+            if payment_provider == "balance"
+            else "💸 Отметить возврат"
+        )
         buttons.append([
             InlineKeyboardButton(
-                text="💸 Вернуть деньги",
+                text=refund_label,
                 callback_data=f"admin:orders:refund:{order_id}",
             ),
         ])

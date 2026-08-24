@@ -1,6 +1,7 @@
 """
 Handlers для профиля и реферальной системы.
 """
+import html
 import logging
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
@@ -77,6 +78,59 @@ class PromoStates(StatesGroup):
     """Состояния для ввода промокода."""
 
     waiting_code = State()
+
+
+async def deliver_promo_result(
+    message: Message,
+    bot_message_id: int | None,
+    text: str,
+    lang: str,
+) -> bool:
+    """Update the promo prompt or send a new result when editing is unavailable."""
+    reply_markup = get_promo_back_keyboard(lang)
+    if bot_message_id:
+        edit_text_error: Exception | None = None
+        try:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=bot_message_id,
+                text=text,
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+            return True
+        except Exception as e:
+            edit_text_error = e
+
+        try:
+            await message.bot.edit_message_caption(
+                chat_id=message.chat.id,
+                message_id=bot_message_id,
+                caption=text,
+                reply_markup=reply_markup,
+                parse_mode="HTML",
+            )
+            return True
+        except Exception as caption_error:
+            logger.warning(
+                "Failed to edit promo result for user %s, sending a new message "
+                "(text error: %s; caption error: %s)",
+                message.from_user.id,
+                edit_text_error,
+                caption_error,
+            )
+
+    try:
+        await message.bot.send_message(
+            chat_id=message.chat.id,
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode="HTML",
+        )
+        return True
+    except Exception:
+        logger.exception("Failed to deliver promo result to user %s", message.from_user.id)
+        return False
 
 
 def format_profile_text(
@@ -710,10 +764,7 @@ async def callback_promo(callback: CallbackQuery, state: FSMContext) -> None:
         lang = db_user.language_code if db_user else get_user_locale(user.language_code)
 
     await state.set_state(PromoStates.waiting_code)
-    # Сохраняем ID сообщения бота и язык для последующего редактирования
-    await state.update_data(promo_message_id=callback.message.message_id, lang=lang)
-
-    await safe_edit_message(
+    edited = await safe_edit_message(
         callback.message,
         text=(
             f"{t('promo.title', lang)}\n\n"
@@ -721,6 +772,19 @@ async def callback_promo(callback: CallbackQuery, state: FSMContext) -> None:
         ),
         reply_markup=get_promo_back_keyboard(lang),
     )
+    promo_message_id = callback.message.message_id
+    if not edited:
+        prompt_message = await callback.message.answer(
+            text=(
+                f"{t('promo.title', lang)}\n\n"
+                f"{t('promo.enter_code', lang)}"
+            ),
+            reply_markup=get_promo_back_keyboard(lang),
+            parse_mode="HTML",
+        )
+        promo_message_id = prompt_message.message_id
+
+    await state.update_data(promo_message_id=promo_message_id, lang=lang)
     await callback.answer()
 
 
@@ -750,41 +814,46 @@ async def process_promo_code(message: Message, state: FSMContext) -> None:
         pass
 
     if not code or len(code) < 3:
-        # Редактируем сообщение бота
-        if bot_message_id:
-            try:
-                await message.bot.edit_message_text(
-                    chat_id=message.chat.id,
-                    message_id=bot_message_id,
-                    text=t("promo.invalid", lang),
-                    reply_markup=get_promo_back_keyboard(lang),
-                    parse_mode="HTML",
-                )
-            except Exception:
-                pass
+        await deliver_promo_result(
+            message,
+            bot_message_id,
+            t("promo.invalid", lang),
+            lang,
+        )
         return
 
     # Активируем промокод
-    async with async_session_factory() as session:
-        user_service = UserService(session)
-        success, message_key, bonus = await user_service.activate_promo_code(
-            user_id=message.from_user.id,
-            code=code,
+    try:
+        async with async_session_factory() as session:
+            user_service = UserService(session)
+            success, message_key, bonus = await user_service.activate_promo_code(
+                user_id=message.from_user.id,
+                code=code,
+            )
+            await session.commit()
+    except Exception:
+        logger.exception("Failed to activate promo code for user %s", message.from_user.id)
+        await deliver_promo_result(
+            message,
+            bot_message_id,
+            t("promo.error", lang),
+            lang,
         )
-        await session.commit()
+        return
 
     # Формируем текст ответа
+    display_code = html.escape(code)
     if success:
         # Очищаем состояние только при успехе
         await state.clear()
         if message_key == "success_stars":
-            response_text = t("promo.success_stars", lang, code=code, amount=f"{bonus:,}")
+            response_text = t("promo.success_stars", lang, code=display_code, amount=f"{bonus:,}")
         elif message_key == "success_usdt":
-            response_text = t("promo.success_usdt", lang, code=code, amount=f"{bonus:.2f}")
+            response_text = t("promo.success_usdt", lang, code=display_code, amount=f"{bonus:.2f}")
         elif message_key == "success_premium":
-            response_text = t("promo.success_premium", lang, code=code, amount=bonus)
+            response_text = t("promo.success_premium", lang, code=display_code, amount=bonus)
         else:
-            response_text = t("promo.success", lang, code=code)
+            response_text = t("promo.success", lang, code=display_code, bonus=bonus or "")
     else:
         # Маппинг ошибок на ключи локализации
         error_keys = {
@@ -796,17 +865,6 @@ async def process_promo_code(message: Message, state: FSMContext) -> None:
             "no_bonus": "promo.no_bonus",
             "user_not_found": "common.user_not_found",
         }
-        response_text = t(error_keys.get(message_key, "promo.not_found"), lang, code=code)
+        response_text = t(error_keys.get(message_key, "promo.not_found"), lang, code=display_code)
 
-    # Редактируем сообщение бота
-    if bot_message_id:
-        try:
-            await message.bot.edit_message_text(
-                chat_id=message.chat.id,
-                message_id=bot_message_id,
-                text=response_text,
-                reply_markup=get_promo_back_keyboard(lang),
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
+    await deliver_promo_result(message, bot_message_id, response_text, lang)

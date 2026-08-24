@@ -26,6 +26,7 @@ menu:
     profile: "👤 Profile"
     news: "📰 News"
     support: "💬 Support"
+    giveaways: "🎁 Giveaways"
     back: "◀️ Back"
 
 # ==================== STARS ====================
@@ -198,11 +199,15 @@ history:
     balance: "💎 From balance"
     cryptobot: "🤖 CryptoBot"
     ton: "💎 TON"
+    platega: "🏦 SBP / Platega"
+    lava: "🏦 SBP"
 
   payment_methods:
     cryptobot: "CryptoBot"
     ton: "TON"
     balance: "From balance"
+    platega: "SBP / Platega"
+    lava: "SBP"
 
   product_types:
     stars: "⭐ Stars"
@@ -330,10 +335,11 @@ promo:
   limit_reached: "❌ Promo code <code>{code}</code> usage limit reached.\n\nEnter another promo code:"
   already_used: "❌ You have already used promo code <code>{code}</code>.\n\nEnter another promo code:"
   no_bonus: "❌ Promo code <code>{code}</code> has no bonus.\n\nEnter another promo code:"
-  success: "✅ Promo code <code>{code}</code> activated!\n\nReceived: <b>{bonus}</b>"
-  success_stars: "✅ Promo code <code>{code}</code> activated!\n\n🎁 Received: <b>{amount} ⭐ Stars</b>"
-  success_usdt: "✅ Promo code <code>{code}</code> activated!\n\n🎁 Received: <b>{amount} 💵 USDT</b>"
-  success_premium: "✅ Promo code <code>{code}</code> activated!\n\n🎁 Received: <b>{amount} 👑 months Premium</b>"
+  error: "❌ The promo code could not be activated due to a technical error.\n\nPlease try again in a few seconds."
+  success: "✅ Promo code <code>{code}</code> was activated successfully!\n\n🎁 Bonus credited: <b>{bonus}</b>"
+  success_stars: "✅ Promo code <code>{code}</code> was activated successfully!\n\n🎁 Credited to your balance: <b>{amount} ⭐ Stars</b>"
+  success_usdt: "✅ Promo code <code>{code}</code> was activated successfully!\n\n🎁 Credited to your balance: <b>{amount} 💵 USDT</b>"
+  success_premium: "✅ Promo code <code>{code}</code> was activated successfully!\n\n🎁 Credited to your balance: <b>{amount} 👑 months Premium</b>"
 
   buttons:
     back: "◀️ Back"
@@ -359,7 +365,7 @@ deposit:
   max_error: "❌ Maximum amount is {max} USDT"
 
   select_method: "💳 <b>Payment method</b>"
-  amount_label: "<blockquote>💵 Amount: <b>{amount} USDT</b></blockquote>"
+  amount_label: "<blockquote>💵 Amount: <b>{amount}</b></blockquote>"
   select_method_prompt: "Select payment method"
 
   methods:
@@ -367,8 +373,8 @@ deposit:
     ton: "💎 TON"
 
   creating: "💳 <b>Creating payment...</b>"
-  to_pay: "<blockquote>💵 Amount to pay: <b>{amount} USDT</b>"
-  will_credit: "💰 Will be credited: <b>{amount} USDT</b></blockquote>"
+  to_pay: "<blockquote>💵 Amount to pay: <b>{amount}</b>"
+  will_credit: "💰 Will be credited: <b>{amount}</b></blockquote>"
   please_wait: "⏳ Please wait..."
 
   cryptobot_title: "💳 <b>Payment via CryptoBot</b>"
@@ -430,6 +436,7 @@ deposit:
 
 # ==================== COMMON ====================
 common:
+  callback_expired: "The request timed out. Tap the button again; the action is safe to retry."
   error: "❌ An error occurred. Please try again later."
   loading: "⏳ Loading..."
   cancel: "❌ Cancel"
@@ -451,6 +458,8 @@ common:
     pay: "💳 Pay"
     pay_ton_full: "💎 Pay"
     check_payment: "🔄 Check payment"
+    pay_lava: "🏦 SBP (+{fee}%)"
+    pay_lava_full: "🏦 Pay via SBP"
 
   # Payment errors
   payment_errors:
@@ -481,7 +490,7 @@ common:
     stars_info: |
       <blockquote>👤 Recipient: <b>@{recipient}</b>
       ⭐ Amount: <b>{amount}</b> stars
-      💵 Price: <b>{price} USDT</b></blockquote>
+      💵 Price: <b>{price}</b></blockquote>
     confirm_text: "Confirm payment from balance"
     confirm_btn: "✅ Confirm payment"
 
@@ -491,11 +500,11 @@ common:
     stars_info: |
       <blockquote>👤 Recipient: <b>@{recipient}</b>
       ⭐ Amount: <b>{amount}</b> stars
-      💵 Price: <b>{price} USDT</b></blockquote>
+      💵 Price: <b>{price}</b></blockquote>
     premium_info: |
       <blockquote>👤 Recipient: <b>@{recipient}</b>
       👑 Period: <b>{months}</b> months
-      💵 Price: <b>{price} USDT</b></blockquote>
+      💵 Price: <b>{price}</b></blockquote>
     creating: "⏳ Creating invoice..."
     instructions: "📝 Click «Pay» and complete payment in CryptoBot. After payment, click «Check payment»."
 
@@ -505,17 +514,55 @@ common:
     stars_info: |
       <blockquote>👤 Recipient: <b>@{recipient}</b>
       ⭐ Amount: <b>{amount}</b> stars
-      💵 Price: <b>{ton_amount} TON</b> ({usdt_amount} USDT)</blockquote>
+      💵 Price: <b>{ton_amount} TON</b> ({usdt_amount})</blockquote>
     premium_info: |
       <blockquote>👤 Recipient: <b>@{recipient}</b>
       👑 Period: <b>{months}</b> months
-      💵 Price: <b>{ton_amount} TON</b> ({usdt_amount} USDT)</blockquote>
+      💵 Price: <b>{ton_amount} TON</b> ({usdt_amount})</blockquote>
     getting_rate: "⏳ Getting current TON rate..."
     instructions: "📝 Click «Pay» and transfer TON. After payment, click «Check payment»."
     warning: "⚠️ <b>Do not remove the comment</b> — payment won't be found without it."
 
+  # Lava payment screen
+  lava_payment:
+    creating: |-
+      🏦 <b>Payment via SBP</b>
+
+      {item_line}
+
+      ⏳ Creating invoice...
+    details: |-
+      🏦 <b>Payment via SBP</b>
+
+      <blockquote>{item_line}
+      Price: <b>{amount_usdt} USDT ({base_amount_rub} RUB)</b>
+      Fee: <b>{fee_percent}%</b>
+      Total: <b>{amount_rub} RUB</b></blockquote>
+
+      Tap “Pay via SBP”. The bot checks the payment automatically; you can also check it manually.
+
+      Invoice lifetime: <b>{ttl_minutes} min.</b>
+    stars_item: |-
+      Recipient: <b>@{recipient}</b>
+      Stars: <b>{quantity}</b>
+    premium_item: |-
+      Recipient: <b>@{recipient}</b>
+      Premium: <b>{quantity} months</b>
+    deposit_item: "Your balance will receive: <b>{amount} USDT</b>"
+    unavailable: "❌ <b>SBP is temporarily unavailable</b>\n\nThis payment method is disabled or not configured yet."
+    create_error: "❌ <b>Could not create an SBP invoice</b>\n\nTry again later or choose another payment method."
+    creation_uncertain: |-
+      ⏳ <b>Checking the SBP invoice</b>
+
+      The payment provider did not respond in time. The bot will check it automatically to avoid creating a duplicate invoice.
+    deposit_received: "✅ <b>Payment received</b>\n\n<blockquote>Balance credited: <b>{amount} USDT</b></blockquote>"
+    expired: "⌛ <b>SBP invoice expired</b>\n\nCreate a new payment if it is still needed."
+    cancelled: "❌ <b>SBP payment cancelled</b>\n\nCreate a new payment or choose another method."
+    failed: "❌ <b>SBP payment failed</b>\n\nCreate a new payment or choose another method."
+
   # Payment status messages
   payment_status:
+    received_title: "✅ <b>Payment received</b>"
     expired_title: "⏱ <b>Time expired</b>"
     cancelled_title: "❌ <b>Payment cancelled</b>"
     error_title: "❌ <b>Error</b>"
@@ -573,17 +620,28 @@ common:
   order:
     created_title: "⏳ <b>Order #{order_key} created</b>"
     processing: "Processing..."
+    payment_confirmed_processing: |-
+      ✅ <b>Payment received successfully.</b>
+      Your order has been accepted. It normally takes a few minutes, but delays are possible.
+
+      If the order takes too long, contact support: @{support_username}
+    delayed_title: "⏳ <b>Order #{order_key} is delayed</b>"
+    delayed_text: |-
+      Your payment was received and the order is still being processed. Please wait.
+
+      If it is not completed within an hour, contact support: @{support_username}
     completed_title: "✅ <b>Order #{order_key} completed!</b>"
     error_title: "❌ <b>Order #{order_key} error</b>"
     recipient: "👤 Recipient: <b>@{username}</b>"
     quantity_stars: "⭐ Amount: <b>{amount} stars</b>"
     quantity_premium: "👑 Period: <b>{months} months</b>"
-    price: "💵 Price: <b>{price} USDT</b>"
+    price: "💵 Price: <b>{price}</b>"
     stars_success: "Stars successfully sent!"
     premium_success: "Premium successfully activated!"
     generic_success: "Order successfully processed!"
     error_reason: "<b>Reason:</b> {reason}"
     error_refund: "💰 Funds returned to balance."
+    error_support: "Your payment has been retained. Contact support to resolve the issue: @{support_username}"
 
     # Error messages
     errors:
@@ -613,8 +671,8 @@ stars_section:
   amount:
     recipient_info: "<blockquote>👤 Recipient: <b>@{username}</b></blockquote>"
     info: |
-      <blockquote>⭐ Minimum: <b>{min}</b> ({min_price} USDT)
-      ⭐ Maximum: <b>{max}</b> ({max_price} USDT)
+      <blockquote>⭐ Minimum: <b>{min}</b> ({min_price})
+      ⭐ Maximum: <b>{max}</b> ({max_price})
 
       💰 Your balance: <b>{balance} USDT</b> (<b>{afford}</b> stars)</blockquote>
 
@@ -634,7 +692,7 @@ stars_section:
     info: |
       <blockquote>👤 Recipient: <b>@{username}</b>
       ⭐ Amount: <b>{amount}</b> stars
-      💵 Price: <b>{price} USDT</b></blockquote>
+      💵 Price: <b>{price}</b></blockquote>
 
     withdraw_info: |
       <blockquote>👤 Recipient: <b>@{username}</b>
@@ -670,9 +728,9 @@ premium_section:
     title: "📅 <b>Subscription period</b>"
     recipient_info: "<blockquote>👤 Recipient: <b>@{username}</b></blockquote>"
     buy_info: |
-      <blockquote>👑 3 months — <b>{price_3} USDT</b>
-      👑 6 months — <b>{price_6} USDT</b>
-      👑 12 months — <b>{price_12} USDT</b>
+      <blockquote>👑 3 months — <b>{price_3}</b>
+      👑 6 months — <b>{price_6}</b>
+      👑 12 months — <b>{price_12}</b>
 
       💰 Your balance: <b>{balance} USDT</b> (<b>{affordable_months}</b> months Premium)</blockquote>
     withdraw_info: |
@@ -689,13 +747,13 @@ premium_section:
     info: |
       <blockquote>👤 Recipient: <b>@{username}</b>
       👑 Period: <b>{months}</b> months
-      💵 Price: <b>{price} USDT</b></blockquote>
+      💵 Price: <b>{price}</b></blockquote>
     withdraw_info: |
       <blockquote>👤 Recipient: <b>@{username}</b>
       👑 Period: <b>{months}</b> months</blockquote>
     recipient: "👤 Recipient: @{username}"
     duration: "📅 Period: {months} months"
-    price: "💵 Price: {price} USDT"
+    price: "💵 Price: {price}"
 
   confirm:
     send: "Confirm sending Premium"
@@ -1283,3 +1341,96 @@ support:
   title: "🆘 <b>Support</b>"
   text: "If you have any questions or issues, contact our support team."
   contact_btn: "📩 Contact Support"
+
+# ==================== GIVEAWAYS ====================
+giveaways:
+  date_msk: "{date} MSK"
+
+  list:
+    title: "🎁 <b>Active giveaways</b>"
+    empty: "There are no active giveaways."
+    item: "🎁 Giveaway · {deadline}"
+
+  detail:
+    template: |
+      🎁 <b>Giveaway</b>
+
+      {description_block}<b>Prizes:</b>
+      {prizes}
+
+      <b>Condition:</b> {condition}
+      <b>Ends:</b> {ends_at}
+      <b>Participants:</b> {participant_count}
+
+      {participation_status}{results_block}
+    prize_line: "{place}. {prize}"
+    participating: "✅ You participate. Your tickets: <b>{tickets}</b>"
+    not_participating: "Complete the condition to participate automatically."
+    results: |
+      <b>Winners:</b>
+      {winner_lines}
+    winner_line: "{place}. {identity} — {prize}"
+    no_winners: "The results are being reviewed by the administrator."
+    unavailable: "Giveaway is unavailable."
+
+  buttons:
+    back: "◀️ Back"
+    buy_stars: "⭐ Buy Stars"
+    buy_premium: "👑 Buy Premium"
+    back_to_list: "◀️ Giveaways"
+    open: "🎁 Participate"
+    notice: "🎁 Giveaway"
+
+  prize:
+    stars: "{amount} Stars"
+    premium: "Telegram Premium for {amount} months"
+    custom_fallback: "Prize"
+
+  condition:
+    purchase_once_all: "Make any purchase in the bot"
+    purchase_once_stars: "Buy Stars in the bot"
+    purchase_once_premium: "Buy Telegram Premium in the bot"
+    tickets_per_order_all: "Each purchase in the bot gives {count} ticket(s)"
+    tickets_per_order_stars: "Each Stars purchase gives {count} ticket(s)"
+    tickets_per_order_premium: "Each Telegram Premium purchase gives {count} ticket(s)"
+    tickets_per_stars: "Every {threshold} Stars purchased gives {count} ticket(s)"
+    registration_new: "Register in the bot during the giveaway"
+    registration_all: "Open the bot and perform any action during the giveaway"
+
+  posts:
+    announcement: |
+      🎁 <b>GIVEAWAY</b>
+
+      {description_block}<b>Prizes:</b>
+      {prizes}
+
+      <b>Condition:</b> {condition}
+      <b>Starts:</b> {starts_at}
+      <b>Ends:</b> {ends_at}
+    announcement_prize_line: "{place}. {prize}"
+    results: |
+      🏆 <b>Giveaway results</b>
+
+      Participants: <b>{participant_count}</b>
+
+      {outcome}
+    winners: |
+      <b>Winners:</b>
+      {winner_lines}
+    winner_line: "{place} place — {identity} — {prize}"
+    user_fallback: "user {user_id}"
+
+  notifications:
+    tickets: |
+      🎟 <b>Giveaway</b>
+
+      Added tickets: <b>+{tickets_added}</b>
+      Your total: <b>{tickets_total}</b>
+    registration: "🎁 You are participating in the giveaway."
+    winner: |
+      🏆 <b>You won the giveaway!</b>
+
+      Place: <b>{place}</b>
+      Prize: <b>{prize}</b>
+
+      The administrator will issue the prize manually.

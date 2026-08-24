@@ -16,6 +16,7 @@ MENU_MEDIA_ITEMS = {
     "profile": "Профиль",
     "referral": "Реферальная система",
     "support": "Поддержка",
+    "giveaways": "Розыгрыши",
 }
 
 

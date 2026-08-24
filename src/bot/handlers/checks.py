@@ -47,8 +47,8 @@ from src.locales import t, get_user_locale
 from src.services.user_service import UserService
 from src.services.telegram_logger import tg_logger
 from src.services.bot_settings_service import get_star_price, get_premium_prices
-from src.bot.keyboards.deposit import get_payment_method_keyboard
-from src.bot.handlers.deposit import DepositStates
+from src.services.rub_rate_service import format_usdt_with_rub
+from src.bot.handlers.deposit import DepositStates, get_deposit_payment_methods_keyboard
 from src.bot.menu_media import edit_menu_message
 
 logger = logging.getLogger(__name__)
@@ -1553,10 +1553,10 @@ async def callback_topup_redirect(callback: CallbackQuery, state: FSMContext) ->
         callback.message,
         text=(
             f"{t('deposit.select_method', lang)}\n\n"
-            f"{t('deposit.amount_label', lang, amount=f'{amount_needed:,.2f}')}\n\n"
+            f"{t('deposit.amount_label', lang, amount=await format_usdt_with_rub(amount_needed))}\n\n"
             f"{t('deposit.select_method_prompt', lang)}"
         ),
-        reply_markup=get_payment_method_keyboard(lang),
+        reply_markup=await get_deposit_payment_methods_keyboard(lang),
     )
     await callback.answer()
 

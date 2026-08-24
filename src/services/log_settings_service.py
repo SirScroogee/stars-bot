@@ -33,9 +33,13 @@ DEFAULT_LOG_SETTINGS = {
         # Ошибки
         "error": True,
         "order_error": True,
+        "order_delayed": True,
+        "order_critical": True,
         # Оплаты (только успешные)
         "deposit": True,
-        # Заказы (только успешные и ошибочные)
+        "payment_completed": True,
+        # Заказы
+        "order_created": True,
         "order_completed": True,
         "order_failed": True,
         # Чеки (только создание)
@@ -205,3 +209,9 @@ def invalidate_log_settings_cache():
     """Сбросить кэш настроек."""
     global _cache_valid
     _cache_valid = False
+    try:
+        from src.services.telegram_logger import tg_logger
+
+        tg_logger.invalidate_cache()
+    except Exception:
+        logger.debug("Could not invalidate TelegramLogger settings cache", exc_info=True)

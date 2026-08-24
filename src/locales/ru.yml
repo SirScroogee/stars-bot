@@ -7,14 +7,14 @@ errors:
 # ==================== ГЛАВНОЕ МЕНЮ ====================
 menu:
   welcome_full: |
-    🛒 Добро пожаловать в наш магазин!
+    <tg-emoji emoji-id="5258179403652801593">🛒</tg-emoji> Добро пожаловать в наш магазин!
 
     У нас вы можете приобрести <b>Telegram Stars</b> и <b>Telegram Premium</b> дешевле чем в приложении и без верификации!
 
-    <blockquote>💰 <b>Ваш баланс:</b>
-    💵 <b>{balance_usdt}</b> USDT
-    ⭐ <b>{balance_stars}</b> звёзд
-    👑 <b>{balance_premium}</b> мес. Premium</blockquote>
+    <blockquote><tg-emoji emoji-id="5258204546391351475">💰</tg-emoji> <b>Ваш баланс:</b>
+    <tg-emoji emoji-id="6030558512252197022">💵</tg-emoji> <b>{balance_usdt}</b> USDT
+    <tg-emoji emoji-id="5956148757899776734">⭐</tg-emoji> <b>{balance_stars}</b> звёзд
+    <tg-emoji emoji-id="6023826881160157558">👑</tg-emoji> <b>{balance_premium}</b> мес. Premium</blockquote>
 
   main_menu_btn: "🏠 Главное меню"
 
@@ -26,6 +26,7 @@ menu:
     profile: "👤 Профиль"
     news: "📰 Новости"
     support: "💬 Поддержка"
+    giveaways: "🎁 Розыгрыши"
     back: "◀️ Назад"
 
 # ==================== STARS ====================
@@ -130,23 +131,23 @@ premium:
 
 # ==================== ПРОФИЛЬ ====================
 profile:
-  title: "👤 <b>Профиль</b>"
+  title: '<tg-emoji emoji-id="5778575233422200567">👤</tg-emoji> <b>Профиль</b>'
   username_not_set: "не указан"
   info: |
-    👤 <b>Профиль</b>
+    <tg-emoji emoji-id="5778575233422200567">👤</tg-emoji> <b>Профиль</b>
 
-    <blockquote>🆔 ID: <b><code>{user_id}</code></b>
-    👤 Username: <b>{username}</b></blockquote>
+    <blockquote><tg-emoji emoji-id="6021344660646009373">🆔</tg-emoji> ID: <b><code>{user_id}</code></b>
+    <tg-emoji emoji-id="5879770735999717115">👤</tg-emoji> Username: <b>{username}</b></blockquote>
 
-    <blockquote>💰 <b>Баланс:</b>
-    💵 <b>{balance_usdt} USDT</b>
-    ⭐ <b>{balance_stars} звёзд</b>
-    👑 <b>{balance_premium} мес. Premium</b></blockquote>
+    <blockquote><tg-emoji emoji-id="5258204546391351475">💰</tg-emoji> <b>Баланс:</b>
+    <tg-emoji emoji-id="5967390100357648692">💵</tg-emoji> <b>{balance_usdt} USDT</b>
+    <tg-emoji emoji-id="5956561749070057536">⭐</tg-emoji> <b>{balance_stars} звёзд</b>
+    <tg-emoji emoji-id="6021428854889913572">👑</tg-emoji> <b>{balance_premium} мес. Premium</b></blockquote>
 
-    <blockquote>📊 <b>Статистика:</b>
-    💳 Пополнено: <b>{deposited} USDT</b>
-    ⭐ Куплено звёзд: <b>{stars_bought} ({stars_usdt} USDT)</b>
-    👑 Куплено Premium: <b>{premium_bought} мес. ({premium_usdt} USDT)</b></blockquote>
+    <blockquote><tg-emoji emoji-id="5931472654660800739">📊</tg-emoji> <b>Статистика:</b>
+    <tg-emoji emoji-id="6030410254276106984">💳</tg-emoji> Пополнено: <b>{deposited} USDT</b>
+    <tg-emoji emoji-id="5956561749070057536">⭐</tg-emoji> Куплено звёзд: <b>{stars_bought} ({stars_usdt} USDT)</b>
+    <tg-emoji emoji-id="6021428854889913572">👑</tg-emoji> Куплено Premium: <b>{premium_bought} мес. ({premium_usdt} USDT)</b></blockquote>
 
   buttons:
     history: "📋 История"
@@ -157,7 +158,7 @@ profile:
 
 # ==================== ИСТОРИЯ ====================
 history:
-  title: "📋 <b>История</b>"
+  title: '<tg-emoji emoji-id="6021435576513730578">📋</tg-emoji> <b>История</b>'
   empty: "У вас пока нет записей."
   total: "Всего записей: <b>{count}</b>"
   page: "Страница <b>{current} из {total}</b>"
@@ -198,11 +199,15 @@ history:
     balance: "💎 С баланса"
     cryptobot: "🤖 CryptoBot"
     ton: "💎 TON"
+    platega: "🏦 СБП / Platega"
+    lava: "🏦 СБП"
 
   payment_methods:
     cryptobot: "CryptoBot"
     ton: "TON"
     balance: "С баланса"
+    platega: "СБП / Platega"
+    lava: "СБП"
 
   product_types:
     stars: "⭐ Звёзды"
@@ -249,24 +254,24 @@ history:
 
 # ==================== РЕФЕРАЛЫ ====================
 referrals:
-  title: "👥 <b>Реферальная система</b>"
+  title: '<tg-emoji emoji-id="5944970130554359187">👥</tg-emoji> <b>Реферальная система</b>'
   description: "Приглашайте друзей и получайте бонусы!"
 
   main_info: |
-    👥 <b>Реферальная система</b>
+    <tg-emoji emoji-id="5944970130554359187">👥</tg-emoji> <b>Реферальная система</b>
 
-    💎 <b>Как это работает?</b>
+    <tg-emoji emoji-id="5807465992363710697">💎</tg-emoji> <b>Как это работает?</b>
     Приглашайте пользователей и получайте процент от прибыли магазина с их покупок!
 
-    <blockquote>📊 <b>3-уровневая система:</b>
+    <blockquote><tg-emoji emoji-id="5931472654660800739">📊</tg-emoji> <b>3-уровневая система:</b>
     <b>1 уровень</b> — <b>{percent1}%</b> от ваших рефералов
     <b>2 уровень</b> — <b>{percent2}%</b> от рефералов ваших рефералов
     <b>3 уровень</b> — <b>{percent3}%</b> от рефералов рефералов ваших рефералов</blockquote>
 
-    <blockquote>💰 <b>Реферальный баланс:</b> <b>{balance} USDT</b>
-    📈 <b>Заработано за всё время:</b> <b>{earnings} USDT</b></blockquote>
+    <blockquote><tg-emoji emoji-id="5778421276024509124">💰</tg-emoji> <b>Реферальный баланс:</b> <b>{balance} USDT</b>
+    <tg-emoji emoji-id="5776219138917668486">📈</tg-emoji> <b>Заработано за всё время:</b> <b>{earnings} USDT</b></blockquote>
 
-    <blockquote>🔗 <b>Ваша ссылка:</b>
+    <blockquote><tg-emoji emoji-id="5877465816030515018">🔗</tg-emoji> <b>Ваша ссылка:</b>
     <code>{link}</code></blockquote>
 
   full_info: |
@@ -299,16 +304,16 @@ referrals:
   your_link: "🔗 <b>Ваша ссылка:</b>"
 
   list_info: |
-    👥 <b>Мои рефералы</b>
+    <tg-emoji emoji-id="5942877472163892475">👥</tg-emoji> <b>Мои рефералы</b>
 
-    <blockquote>📊 <b>Всего рефералов:</b> <b>{total}</b> чел.</blockquote>
+    <blockquote><tg-emoji emoji-id="5877485980901971030">📊</tg-emoji> <b>Всего рефералов:</b> <b>{total}</b> чел.</blockquote>
 
-    <blockquote>📈 <b>По уровням:</b>
+    <blockquote><tg-emoji emoji-id="5776219138917668486">📈</tg-emoji> <b>По уровням:</b>
     1 уровень: <b>{level1}</b> чел. ({percent1}%)
     2 уровень: <b>{level2}</b> чел. ({percent2}%)
     3 уровень: <b>{level3}</b> чел. ({percent3}%)</blockquote>
 
-    <blockquote>💰 <b>Заработано с рефералов:</b> <b>{earnings} USDT</b></blockquote>
+    <blockquote><tg-emoji emoji-id="5778421276024509124">💰</tg-emoji> <b>Заработано с рефералов:</b> <b>{earnings} USDT</b></blockquote>
 
   withdraw_success: "✅ Выведено {amount} USDT на основной баланс!"
   withdraw_no_balance: "❌ Реферальный баланс пуст"
@@ -321,7 +326,7 @@ referrals:
 
 # ==================== ПРОМОКОД ====================
 promo:
-  title: "🎁 <b>Активация промокода</b>"
+  title: '<tg-emoji emoji-id="5875180111744995604">🎁</tg-emoji> <b>Активация промокода</b>'
   enter_code: "Введите промокод:"
   invalid: "❌ Некорректный промокод.\n\nПопробуйте ещё раз:"
   not_found: "❌ Промокод <code>{code}</code> не найден.\n\nПопробуйте ещё раз:"
@@ -330,17 +335,18 @@ promo:
   limit_reached: "❌ Лимит использований промокода <code>{code}</code> исчерпан.\n\nВведите другой промокод:"
   already_used: "❌ Вы уже использовали промокод <code>{code}</code>.\n\nВведите другой промокод:"
   no_bonus: "❌ Промокод <code>{code}</code> не содержит бонуса.\n\nВведите другой промокод:"
-  success: "✅ Промокод <code>{code}</code> активирован!\n\nПолучено: <b>{bonus}</b>"
-  success_stars: "✅ Промокод <code>{code}</code> активирован!\n\n🎁 Получено: <b>{amount} ⭐ Stars</b>"
-  success_usdt: "✅ Промокод <code>{code}</code> активирован!\n\n🎁 Получено: <b>{amount} 💵 USDT</b>"
-  success_premium: "✅ Промокод <code>{code}</code> активирован!\n\n🎁 Получено: <b>{amount} 👑 мес. Premium</b>"
+  error: "❌ Не удалось активировать промокод из-за технической ошибки.\n\nПопробуйте ещё раз через несколько секунд."
+  success: "✅ Промокод <code>{code}</code> успешно активирован!\n\n🎁 Бонус зачислен: <b>{bonus}</b>"
+  success_stars: "✅ Промокод <code>{code}</code> успешно активирован!\n\n🎁 На баланс зачислено: <b>{amount} ⭐ Stars</b>"
+  success_usdt: "✅ Промокод <code>{code}</code> успешно активирован!\n\n🎁 На баланс зачислено: <b>{amount} 💵 USDT</b>"
+  success_premium: "✅ Промокод <code>{code}</code> успешно активирован!\n\n🎁 На баланс зачислено: <b>{amount} 👑 мес. Premium</b>"
 
   buttons:
     back: "◀️ Назад"
 
 # ==================== ЯЗЫК ====================
 language:
-  title: "🌐 <b>Выбор языка</b>"
+  title: '<tg-emoji emoji-id="5879585266426973039">🌐</tg-emoji> <b>Выбор языка</b>'
   description: "Выберите язык интерфейса бота:"
 
   buttons:
@@ -350,32 +356,32 @@ language:
 
 # ==================== ПОПОЛНЕНИЕ ====================
 deposit:
-  title: "💳 <b>Пополнение баланса</b>"
-  current_balance: "<blockquote>💰 Текущий баланс: <b>{balance} USDT</b></blockquote>"
+  title: '<tg-emoji emoji-id="5927169041595634481">💳</tg-emoji> <b>Пополнение баланса</b>'
+  current_balance: '<blockquote><tg-emoji emoji-id="5258204546391351475">💰</tg-emoji> Текущий баланс: <b>{balance} USDT</b></blockquote>'
   enter_amount_prompt: "Введите сумму пополнения в USDT"
   amount_range: ""
   invalid_amount: "❌ Введите корректную сумму"
   min_error: "❌ Минимальная сумма — {min} USDT"
   max_error: "❌ Максимальная сумма — {max} USDT"
 
-  select_method: "💳 <b>Способ оплаты</b>"
-  amount_label: "<blockquote>💵 Сумма: <b>{amount} USDT</b></blockquote>"
+  select_method: '<tg-emoji emoji-id="5927169041595634481">💳</tg-emoji> <b>Способ оплаты</b>'
+  amount_label: '<blockquote><tg-emoji emoji-id="5967390100357648692">💵</tg-emoji> Сумма: <b>{amount}</b></blockquote>'
   select_method_prompt: "Выберите способ оплаты"
 
   methods:
     cryptobot: "🤖 CryptoBot (+3%)"
     ton: "💎 TON"
 
-  creating: "💳 <b>Создание платежа...</b>"
-  to_pay: "<blockquote>💵 Сумма к оплате: <b>{amount} USDT</b>"
-  will_credit: "💰 Зачислится: <b>{amount} USDT</b></blockquote>"
+  creating: '<tg-emoji emoji-id="5927169041595634481">💳</tg-emoji> <b>Создание платежа...</b>'
+  to_pay: '<blockquote><tg-emoji emoji-id="5967390100357648692">💵</tg-emoji> Сумма к оплате: <b>{amount}</b>'
+  will_credit: '<tg-emoji emoji-id="5987880246865565644">💰</tg-emoji> Зачислится: <b>{amount}</b></blockquote>'
   please_wait: "⏳ Подождите..."
 
-  cryptobot_title: "💳 <b>Оплата через CryptoBot</b>"
+  cryptobot_title: '<tg-emoji emoji-id="6030410254276106984">💳</tg-emoji> <b>Оплата через CryptoBot</b>'
   cryptobot_instructions: |
     <blockquote>Нажмите «Оплатить» и завершите оплату в CryptoBot.
     После оплаты нажмите «Проверить оплату».</blockquote>
-  payment_time: "⏰ Время на оплату: 30 минут"
+  payment_time: '<tg-emoji emoji-id="5983150113483134607">⏰</tg-emoji> Время на оплату: 30 минут'
 
   ton_title: "💎 <b>Оплата в TON</b>"
   ton_amount: "<blockquote>💎 К оплате: <b>{amount} TON</b></blockquote>"
@@ -430,6 +436,7 @@ deposit:
 
 # ==================== ОБЩИЕ ====================
 common:
+  callback_expired: "Время ожидания истекло. Нажмите кнопку ещё раз — действие можно безопасно повторить."
   error: "❌ Произошла ошибка. Попробуйте позже."
   loading: "⏳ Загрузка..."
   cancel: "❌ Отмена"
@@ -451,6 +458,8 @@ common:
     pay: "💳 Оплатить"
     pay_ton_full: "💎 Оплатить"
     check_payment: "🔄 Проверить оплату"
+    pay_lava: "🏦 СБП (+{fee}%)"
+    pay_lava_full: "🏦 Оплатить через СБП"
 
   # Платежи
   payment_errors:
@@ -477,47 +486,85 @@ common:
 
   # Экран подтверждения оплаты с баланса
   balance_payment:
-    title: "💰 <b>Оплата с баланса</b>"
+    title: '<tg-emoji emoji-id="5778421276024509124">💰</tg-emoji> <b>Оплата с баланса</b>'
     stars_info: |
-      <blockquote>👤 Получатель: <b>@{recipient}</b>
-      ⭐ Количество: <b>{amount}</b> звёзд
-      💵 Стоимость: <b>{price} USDT</b></blockquote>
+      <blockquote><tg-emoji emoji-id="5879770735999717115">👤</tg-emoji> Получатель: <b>@{recipient}</b>
+      <tg-emoji emoji-id="5956561749070057536">⭐</tg-emoji> Количество: <b>{amount}</b> звёзд
+      <tg-emoji emoji-id="6030558512252197022">💵</tg-emoji> Стоимость: <b>{price}</b></blockquote>
     confirm_text: "Подтвердите оплату с баланса"
     confirm_btn: "✅ Подтвердить оплату"
 
   # Экран оплаты CryptoBot
   cryptobot_payment:
-    title: "🤖 <b>Оплата через CryptoBot</b>"
+    title: '<tg-emoji emoji-id="5931415565955503486">🤖</tg-emoji> <b>Оплата через CryptoBot</b>'
     stars_info: |
-      <blockquote>👤 Получатель: <b>@{recipient}</b>
-      ⭐ Количество: <b>{amount}</b> звёзд
-      💵 Стоимость: <b>{price} USDT</b></blockquote>
+      <blockquote><tg-emoji emoji-id="5879770735999717115">👤</tg-emoji> Получатель: <b>@{recipient}</b>
+      <tg-emoji emoji-id="5956561749070057536">⭐</tg-emoji> Количество: <b>{amount}</b> звёзд
+      <tg-emoji emoji-id="6030558512252197022">💵</tg-emoji> Стоимость: <b>{price}</b></blockquote>
     premium_info: |
-      <blockquote>👤 Получатель: <b>@{recipient}</b>
-      👑 Период: <b>{months}</b> мес.
-      💵 Стоимость: <b>{price} USDT</b></blockquote>
+      <blockquote><tg-emoji emoji-id="5879770735999717115">👤</tg-emoji> Получатель: <b>@{recipient}</b>
+      <tg-emoji emoji-id="6021428854889913572">👑</tg-emoji> Период: <b>{months}</b> мес.
+      <tg-emoji emoji-id="5967390100357648692">💵</tg-emoji> Стоимость: <b>{price}</b></blockquote>
     creating: "⏳ Создаём инвойс..."
-    instructions: "📝 Нажмите «Оплатить» и оплатите в CryptoBot. После оплаты нажмите «Проверить оплату»."
+    instructions: '<tg-emoji emoji-id="5960551395730919906">📝</tg-emoji> Нажмите «Оплатить» и оплатите в CryptoBot. После оплаты нажмите «Проверить оплату».'
 
   # Экран оплаты TON
   ton_payment:
-    title: "💎 <b>Оплата в TON</b>"
+    title: '<tg-emoji emoji-id="5778546023349621090">💎</tg-emoji> <b>Оплата в TON</b>'
     stars_info: |
-      <blockquote>👤 Получатель: <b>@{recipient}</b>
-      ⭐ Количество: <b>{amount}</b> звёзд
-      💵 Стоимость: <b>{ton_amount} TON</b> ({usdt_amount} USDT)</blockquote>
+      <blockquote><tg-emoji emoji-id="5879770735999717115">👤</tg-emoji> Получатель: <b>@{recipient}</b>
+      <tg-emoji emoji-id="5956561749070057536">⭐</tg-emoji> Количество: <b>{amount}</b> звёзд
+      <tg-emoji emoji-id="6030558512252197022">💵</tg-emoji> Стоимость: <b>{ton_amount} TON</b> ({usdt_amount})</blockquote>
     premium_info: |
-      <blockquote>👤 Получатель: <b>@{recipient}</b>
-      👑 Период: <b>{months}</b> мес.
-      💵 Стоимость: <b>{ton_amount} TON</b> ({usdt_amount} USDT)</blockquote>
+      <blockquote><tg-emoji emoji-id="5879770735999717115">👤</tg-emoji> Получатель: <b>@{recipient}</b>
+      <tg-emoji emoji-id="6021428854889913572">👑</tg-emoji> Период: <b>{months}</b> мес.
+      <tg-emoji emoji-id="5967390100357648692">💵</tg-emoji> Стоимость: <b>{ton_amount} TON</b> ({usdt_amount})</blockquote>
     getting_rate: "⏳ Получаем актуальный курс TON..."
-    instructions: "📝 Нажмите «Оплатить» и переведите TON. После оплаты нажмите «Проверить оплату»."
-    warning: "⚠️ <b>Не удаляйте комментарий</b> — без него платёж не найдётся."
+    instructions: '<tg-emoji emoji-id="5257965174979042426">📝</tg-emoji> Нажмите «Оплатить» и переведите TON. После оплаты нажмите «Проверить оплату».'
+    warning: '<tg-emoji emoji-id="6019102674832595118">⚠️</tg-emoji> <b>Не удаляйте комментарий</b> — без него платёж не найдётся.'
+
+  # Экран оплаты Lava
+  lava_payment:
+    creating: |-
+      🏦 <b>Оплата через СБП</b>
+
+      {item_line}
+
+      ⏳ Создаём счёт...
+    details: |-
+      🏦 <b>Оплата через СБП</b>
+
+      <blockquote>{item_line}
+      Стоимость: <b>{amount_usdt} USDT ({base_amount_rub} RUB)</b>
+      Комиссия: <b>{fee_percent}%</b>
+      К оплате: <b>{amount_rub} RUB</b></blockquote>
+
+      Нажмите «Оплатить через СБП». Бот проверит оплату автоматически, также её можно проверить вручную.
+
+      Срок действия счёта: <b>{ttl_minutes} мин.</b>
+    stars_item: |-
+      Получатель: <b>@{recipient}</b>
+      Звёзды: <b>{quantity}</b>
+    premium_item: |-
+      Получатель: <b>@{recipient}</b>
+      Premium: <b>{quantity} мес.</b>
+    deposit_item: "На баланс поступит: <b>{amount} USDT</b>"
+    unavailable: "❌ <b>СБП временно недоступна</b>\n\nСпособ оплаты выключен или ещё не настроен."
+    create_error: "❌ <b>Не удалось создать счёт СБП</b>\n\nПопробуйте позже или выберите другой способ оплаты."
+    creation_uncertain: |-
+      ⏳ <b>Проверяем создание счёта СБП</b>
+
+      Платёжная система не успела вернуть ответ. Бот проверит результат автоматически, чтобы не создать повторный счёт.
+    deposit_received: "✅ <b>Оплата получена</b>\n\n<blockquote>Баланс пополнен на: <b>{amount} USDT</b></blockquote>"
+    expired: "⌛ <b>Счёт СБП истёк</b>\n\nСоздайте новый платёж, если оплата ещё актуальна."
+    cancelled: "❌ <b>Платёж СБП отменён</b>\n\nСоздайте новый платёж или выберите другой способ оплаты."
+    failed: "❌ <b>Платёж СБП не прошёл</b>\n\nСоздайте новый платёж или выберите другой способ оплаты."
 
   # Сообщения о статусе платежа
   payment_status:
+    received_title: "✅ <b>Оплата получена</b>"
     expired_title: "⏱ <b>Время истекло</b>"
-    cancelled_title: "❌ <b>Платёж отменён</b>"
+    cancelled_title: '<tg-emoji emoji-id="5778527486270770928">❌</tg-emoji> <b>Платёж отменён</b>'
     error_title: "❌ <b>Ошибка</b>"
 
   # Полное сообщение о необходимости username
@@ -526,7 +573,7 @@ common:
     Установите username в настройках Telegram, чтобы получать Stars/Premium.
 
   recipient:
-    title: "👤 <b>Получатель</b>"
+    title: '<tg-emoji emoji-id="5879770735999717115">👤</tg-emoji> <b>Получатель</b>'
     enter: "Введите username пользователя,"
     checking: "⏳ Проверяем @{username}..."
     invalid: "❌ Введите корректный username (минимум 3 символа)"
@@ -540,27 +587,27 @@ common:
       unavailable_stars: "<blockquote>❌ Пользователь @{username} недоступен для получения Stars</blockquote>"
       cannot_receive_premium: "<blockquote>❌ Пользователь @{username} не может получить Premium</blockquote>"
       unavailable_premium: "<blockquote>❌ Пользователь @{username} недоступен для получения Premium</blockquote>"
-      already_has_premium: "<blockquote>❌ У пользователя @{username} уже есть активная подписка Premium</blockquote>"
+      already_has_premium: '<blockquote><tg-emoji emoji-id="5778527486270770928">❌</tg-emoji> У пользователя @{username} уже есть активная подписка Premium</blockquote>'
       rate_limit: "<blockquote>❌ Слишком много запросов. Подождите минуту</blockquote>"
       timeout: "<blockquote>❌ Сервис не отвечает. Попробуйте позже</blockquote>"
       unknown: "<blockquote>❌ Неизвестная ошибка. Попробуйте позже</blockquote>"
       validation_error: "<blockquote>❌ Ошибка проверки. Попробуйте позже</blockquote>"
 
   amount:
-    title: "🔢 <b>Количество</b>"
+    title: '<tg-emoji emoji-id="5226513232549664618">🔢</tg-emoji> <b>Количество</b>'
     enter_number: "❌ Введите число"
     min_error: "❌ Минимальное количество — {min}"
     max_error: "❌ Максимальное количество — {max}"
 
   payment:
-    title: "💳 <b>Способ оплаты</b>"
-    select: "🔍 Выберите способ оплаты"
+    title: '<tg-emoji emoji-id="6030410254276106984">💳</tg-emoji> <b>Способ оплаты</b>'
+    select: '<tg-emoji emoji-id="5260416304224936047">🔍</tg-emoji> Выберите способ оплаты'
     balance: "💰 С баланса"
     usdt: "💵 USDT"
     ton: "💎 TON"
 
   confirmation:
-    title: "✅ <b>Подтверждение</b>"
+    title: '<tg-emoji emoji-id="5776375003280838798">✅</tg-emoji> <b>Подтверждение</b>'
     confirm_btn: "✅ Подтвердить"
 
   units:
@@ -571,19 +618,30 @@ common:
 
   # Статусы заказов
   order:
-    created_title: "⏳ <b>Заказ #{order_key} создан</b>"
+    created_title: '<tg-emoji emoji-id="6032604359794104706">⏳</tg-emoji> <b>Заказ #{order_key} создан</b>'
     processing: "Обрабатывается..."
+    payment_confirmed_processing: |-
+      ✅ <b>Оплата успешно получена.</b>
+      Заказ передан на выполнение. Обычно это занимает несколько минут, но иногда возможна задержка.
+
+      Если заказ долго не выполняется, напишите в поддержку: @{support_username}
+    delayed_title: "⏳ <b>Заказ #{order_key} выполняется с задержкой</b>"
+    delayed_text: |-
+      Оплата успешно получена, заказ остаётся в работе. Пожалуйста, подождите.
+
+      Если заказ не выполнится в течение часа, свяжитесь с поддержкой: @{support_username}
     completed_title: "✅ <b>Заказ #{order_key} выполнен!</b>"
     error_title: "❌ <b>Ошибка заказа #{order_key}</b>"
-    recipient: "👤 Получатель: <b>@{username}</b>"
-    quantity_stars: "⭐ Количество: <b>{amount} звёзд</b>"
-    quantity_premium: "👑 Срок: <b>{months} мес.</b>"
-    price: "💵 Стоимость: <b>{price} USDT</b>"
+    recipient: '<tg-emoji emoji-id="5879770735999717115">👤</tg-emoji> Получатель: <b>@{username}</b>'
+    quantity_stars: '<tg-emoji emoji-id="5956561749070057536">⭐</tg-emoji> Количество: <b>{amount} звёзд</b>'
+    quantity_premium: '<tg-emoji emoji-id="6021428854889913572">👑</tg-emoji> Срок: <b>{months} мес.</b>'
+    price: '<tg-emoji emoji-id="6030558512252197022">💵</tg-emoji> Стоимость: <b>{price}</b>'
     stars_success: "Звёзды успешно отправлены!"
     premium_success: "Premium успешно активирован!"
     generic_success: "Заказ успешно обработан!"
     error_reason: "<b>Причина:</b> {reason}"
-    error_refund: "💰 Средства возвращены на баланс."
+    error_refund: '<tg-emoji emoji-id="5778421276024509124">💰</tg-emoji> Средства возвращены на баланс.'
+    error_support: "Оплата сохранена. Для решения вопроса свяжитесь с поддержкой: @{support_username}"
 
     # Сообщения об ошибках
     errors:
@@ -598,33 +656,33 @@ common:
 # ==================== РАЗДЕЛ ЗВЁЗД ====================
 stars_section:
   menu:
-    title: "⭐ <b>Telegram Stars</b>"
+    title: '<tg-emoji emoji-id="5956561749070057536">⭐</tg-emoji> <b>Telegram Stars</b>'
     description: "Здесь вы можете купить звёзды или получить их со своего баланса в боте."
     balance: |
-      <blockquote>💰 <b>Ваш баланс:</b>
-      💵 <b>{balance_usdt}</b> USDT
-      ⭐ <b>{balance_stars}</b> звёзд</blockquote>
+      <blockquote><tg-emoji emoji-id="5258204546391351475">💰</tg-emoji> <b>Ваш баланс:</b>
+      <tg-emoji emoji-id="6030558512252197022">💵</tg-emoji> <b>{balance_usdt}</b> USDT
+      <tg-emoji emoji-id="5956148757899776734">⭐</tg-emoji> <b>{balance_stars}</b> звёзд</blockquote>
     buy_btn: "💳 Купить звёзды"
     withdraw_btn: "📤 Получить звёзды с баланса"
 
   recipient:
-    enter: "🔍 Введите @username пользователя, которому хотите подарить звёзды."
+    enter: '<tg-emoji emoji-id="5258215635996908355">🔍</tg-emoji> Введите @username пользователя, которому хотите подарить звёзды.'
 
   amount:
-    recipient_info: "<blockquote>👤 Получатель: <b>@{username}</b></blockquote>"
+    recipient_info: '<blockquote><tg-emoji emoji-id="5879770735999717115">👤</tg-emoji> Получатель: <b>@{username}</b></blockquote>'
     info: |
-      <blockquote>⭐ Минимум: <b>{min}</b> ({min_price} USDT)
-      ⭐ Максимум: <b>{max}</b> ({max_price} USDT)
+      <blockquote><tg-emoji emoji-id="5956561749070057536">⭐</tg-emoji> Минимум: <b>{min}</b> ({min_price})
+      <tg-emoji emoji-id="5956561749070057536">⭐</tg-emoji> Максимум: <b>{max}</b> ({max_price})
 
-      💰 Ваш баланс: <b>{balance} USDT</b> (<b>{afford}</b> звёзд)</blockquote>
+      <tg-emoji emoji-id="5258204546391351475">💰</tg-emoji> Ваш баланс: <b>{balance} USDT</b> (<b>{afford}</b> звёзд)</blockquote>
 
     withdraw_info: |
-      <blockquote>⭐ Минимум: <b>{min}</b> звёзд
-      ⭐ Максимум: <b>{max}</b> звёзд
+      <blockquote><tg-emoji emoji-id="5956561749070057536">⭐</tg-emoji> Минимум: <b>{min}</b> звёзд
+      <tg-emoji emoji-id="5956561749070057536">⭐</tg-emoji> Максимум: <b>{max}</b> звёзд
 
-      💰 Ваш баланс: <b>{available}</b> звёзд</blockquote>
+      <tg-emoji emoji-id="5258204546391351475">💰</tg-emoji> Ваш баланс: <b>{available}</b> звёзд</blockquote>
 
-    select: "🔍 Выберите количество или введите своё"
+    select: '<tg-emoji emoji-id="5260416304224936047">🔍</tg-emoji> Выберите количество или введите своё'
     use_all_balance: "💫 На весь баланс ({amount})"
     available: "Доступно на балансе — {amount} звёзд"
     insufficient: "❌ Недостаточно звёзд. Минимум {min} ⭐"
@@ -632,13 +690,13 @@ stars_section:
 
   payment:
     info: |
-      <blockquote>👤 Получатель: <b>@{username}</b>
-      ⭐ Количество: <b>{amount}</b> звёзд
-      💵 Стоимость: <b>{price} USDT</b></blockquote>
+      <blockquote><tg-emoji emoji-id="5879770735999717115">👤</tg-emoji> Получатель: <b>@{username}</b>
+      <tg-emoji emoji-id="5260416304224936047">⭐</tg-emoji> Количество: <b>{amount}</b> звёзд
+      <tg-emoji emoji-id="6030558512252197022">💵</tg-emoji> Стоимость: <b>{price}</b></blockquote>
 
     withdraw_info: |
-      <blockquote>👤 Получатель: <b>@{username}</b>
-      ⭐ Количество: <b>{amount}</b> звёзд</blockquote>
+      <blockquote><tg-emoji emoji-id="5879770735999717115">👤</tg-emoji> Получатель: <b>@{username}</b>
+      <tg-emoji emoji-id="5260416304224936047">⭐</tg-emoji> Количество: <b>{amount}</b> звёзд</blockquote>
 
   confirm:
     send: "Подтвердите отправку звёзд"
@@ -654,30 +712,30 @@ stars_section:
 # ==================== РАЗДЕЛ PREMIUM ====================
 premium_section:
   menu:
-    title: "👑 <b>Telegram Premium</b>"
+    title: '<tg-emoji emoji-id="6021428854889913572">👑</tg-emoji> <b>Telegram Premium</b>'
     description: "Здесь вы можете купить Premium или получить его со своего баланса в боте."
     balance: |
-      <blockquote>💰 <b>Ваш баланс:</b>
-      💵 <b>{balance_usdt}</b> USDT
-      👑 <b>{balance_premium}</b> мес. Premium</blockquote>
+      <blockquote><tg-emoji emoji-id="5258204546391351475">💰</tg-emoji> <b>Ваш баланс:</b>
+      <tg-emoji emoji-id="5967390100357648692">💵</tg-emoji> <b>{balance_usdt}</b> USDT
+      <tg-emoji emoji-id="6021428854889913572">👑</tg-emoji> <b>{balance_premium}</b> мес. Premium</blockquote>
     buy_btn: "💳 Купить Premium"
     withdraw_btn: "📤 Получить Premium с баланса"
 
   recipient:
-    enter: "🔍 Введите @username пользователя, которому хотите подарить Premium."
+    enter: '<tg-emoji emoji-id="6021451978993834164">🔍</tg-emoji> Введите @username пользователя, которому хотите подарить Premium.'
 
   duration:
-    title: "📅 <b>Срок подписки</b>"
-    recipient_info: "<blockquote>👤 Получатель: <b>@{username}</b></blockquote>"
+    title: '<tg-emoji emoji-id="5967412305338568701">📅</tg-emoji> <b>Срок подписки</b>'
+    recipient_info: '<blockquote><tg-emoji emoji-id="5879770735999717115">👤</tg-emoji> Получатель: <b>@{username}</b></blockquote>'
     buy_info: |
-      <blockquote>👑 3 месяца — <b>{price_3} USDT</b>
-      👑 6 месяцев — <b>{price_6} USDT</b>
-      👑 12 месяцев — <b>{price_12} USDT</b>
+      <blockquote><tg-emoji emoji-id="6021428854889913572">👑</tg-emoji> 3 месяца — <b>{price_3}</b>
+      <tg-emoji emoji-id="6021428854889913572">👑</tg-emoji> 6 месяцев — <b>{price_6}</b>
+      <tg-emoji emoji-id="6021428854889913572">👑</tg-emoji> 12 месяцев — <b>{price_12}</b>
 
-      💰 Ваш баланс: <b>{balance} USDT</b> (<b>{affordable_months}</b> мес. Premium)</blockquote>
+      <tg-emoji emoji-id="5258204546391351475">💰</tg-emoji> Ваш баланс: <b>{balance} USDT</b> (<b>{affordable_months}</b> мес. Premium)</blockquote>
     withdraw_info: |
-      <blockquote>💰 Ваш баланс: <b>{available}</b> мес. Premium</blockquote>
-    select: "🔍 Выберите срок подписки"
+      <blockquote><tg-emoji emoji-id="5258204546391351475">💰</tg-emoji> Ваш баланс: <b>{available}</b> мес. Premium</blockquote>
+    select: '<tg-emoji emoji-id="6021451978993834164">🔍</tg-emoji> Выберите срок подписки'
     available: "Доступно на балансе: {months} мес."
     insufficient: "❌ Недостаточно Premium на балансе. Минимум 3 мес."
     insufficient_balance: "❌ Недостаточно Premium. Доступно: {months} мес."
@@ -687,15 +745,15 @@ premium_section:
 
   payment:
     info: |
-      <blockquote>👤 Получатель: <b>@{username}</b>
-      👑 Срок: <b>{months}</b> мес.
-      💵 Стоимость: <b>{price} USDT</b></blockquote>
+      <blockquote><tg-emoji emoji-id="5879770735999717115">👤</tg-emoji> Получатель: <b>@{username}</b>
+      <tg-emoji emoji-id="6021428854889913572">👑</tg-emoji> Срок: <b>{months}</b> мес.
+      <tg-emoji emoji-id="5967390100357648692">💵</tg-emoji> Стоимость: <b>{price}</b></blockquote>
     withdraw_info: |
-      <blockquote>👤 Получатель: <b>@{username}</b>
-      👑 Срок: <b>{months}</b> мес.</blockquote>
-    recipient: "👤 Получатель: @{username}"
-    duration: "📅 Срок: {months} мес."
-    price: "💵 Стоимость: {price} USDT"
+      <blockquote><tg-emoji emoji-id="5879770735999717115">👤</tg-emoji> Получатель: <b>@{username}</b>
+      <tg-emoji emoji-id="6021428854889913572">👑</tg-emoji> Срок: <b>{months}</b> мес.</blockquote>
+    recipient: '<tg-emoji emoji-id="5879770735999717115">👤</tg-emoji> Получатель: @{username}'
+    duration: '<tg-emoji emoji-id="5967412305338568701">📅</tg-emoji> Срок: {months} мес.'
+    price: '<tg-emoji emoji-id="5967390100357648692">💵</tg-emoji> Стоимость: {price}'
 
   confirm:
     send: "Подтвердите отправку Premium"
@@ -1276,6 +1334,99 @@ inline:
 
 # ==================== ПОДДЕРЖКА ====================
 support:
-  title: "🆘 <b>Поддержка</b>"
+  title: '<tg-emoji emoji-id="5258108352008823107">🆘</tg-emoji> <b>Поддержка</b>'
   text: "Если у вас возникли вопросы или проблемы, свяжитесь с нашей поддержкой."
   contact_btn: "📩 Написать в поддержку"
+
+# ==================== РОЗЫГРЫШИ ====================
+giveaways:
+  date_msk: "{date} МСК"
+
+  list:
+    title: "🎁 <b>Активные розыгрыши</b>"
+    empty: "Сейчас активных розыгрышей нет."
+    item: "🎁 Розыгрыш · {deadline}"
+
+  detail:
+    template: |
+      🎁 <b>Розыгрыш</b>
+
+      {description_block}<b>Призы:</b>
+      {prizes}
+
+      <b>Условия:</b> {condition}
+      <b>Окончание:</b> {ends_at}
+      <b>Участников:</b> {participant_count}
+
+      {participation_status}{results_block}
+    prize_line: "{place}. {prize}"
+    participating: "✅ Вы участвуете. Ваши билеты: <b>{tickets}</b>"
+    not_participating: "Выполните условие, и бот добавит вас автоматически."
+    results: |
+      <b>Победители:</b>
+      {winner_lines}
+    winner_line: "{place}. {identity} — {prize}"
+    no_winners: "Результаты уточняются администрацией."
+    unavailable: "Розыгрыш недоступен."
+
+  buttons:
+    back: "◀️ Назад"
+    buy_stars: "⭐ Купить Stars"
+    buy_premium: "👑 Купить Premium"
+    back_to_list: "◀️ Розыгрыши"
+    open: "🎁 Участвовать"
+    notice: "🎁 Розыгрыш"
+
+  prize:
+    stars: "{amount} Stars"
+    premium: "Telegram Premium на {amount} мес."
+    custom_fallback: "Приз"
+
+  condition:
+    purchase_once_all: "Совершить любую покупку в боте"
+    purchase_once_stars: "Купить Stars в боте"
+    purchase_once_premium: "Купить Telegram Premium в боте"
+    tickets_per_order_all: "За каждую покупку в боте начисляется {count} билет(а)"
+    tickets_per_order_stars: "За каждую покупку Stars начисляется {count} билет(а)"
+    tickets_per_order_premium: "За каждую покупку Telegram Premium начисляется {count} билет(а)"
+    tickets_per_stars: "За каждые {threshold} купленных Stars начисляется {count} билет(а)"
+    registration_new: "Зарегистрироваться в боте во время розыгрыша"
+    registration_all: "Зайти в бот и совершить любое действие во время розыгрыша"
+
+  posts:
+    announcement: |
+      🎁 <b>РОЗЫГРЫШ</b>
+
+      {description_block}<b>Призы:</b>
+      {prizes}
+
+      <b>Условия:</b> {condition}
+      <b>Начало:</b> {starts_at}
+      <b>Окончание:</b> {ends_at}
+    announcement_prize_line: "{place}. {prize}"
+    results: |
+      🏆 <b>Итоги розыгрыша</b>
+
+      Участников: <b>{participant_count}</b>
+
+      {outcome}
+    winners: |
+      <b>Победители:</b>
+      {winner_lines}
+    winner_line: "{place} место — {identity} — {prize}"
+    user_fallback: "пользователь {user_id}"
+
+  notifications:
+    tickets: |
+      🎟 <b>Розыгрыш</b>
+
+      Начислено билетов: <b>+{tickets_added}</b>
+      Всего у вас: <b>{tickets_total}</b>
+    registration: "🎁 Вы стали участником розыгрыша."
+    winner: |
+      🏆 <b>Вы победили в розыгрыше!</b>
+
+      Место: <b>{place}</b>
+      Приз: <b>{prize}</b>
+
+      Приз будет выдан администратором вручную.

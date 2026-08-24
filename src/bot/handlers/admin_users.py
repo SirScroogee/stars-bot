@@ -47,7 +47,7 @@ from src.bot.keyboards.admin import (
     get_user_message_back_keyboard,
 )
 from src.bot.middlewares.ban_check import invalidate_ban_cache
-from src.db.models import User, Order, BalanceLedger
+from src.db.models import BalanceLedger, LavaPayment, Order, User
 from src.db.session import async_session_factory
 from src.services.user_service import UserService
 from src.services.telegram_logger import tg_logger
@@ -800,6 +800,12 @@ async def callback_user_order_detail(callback: CallbackQuery) -> None:
 
         # Сохраняем данные платежа
         payment_data = order.payment
+        lava_payment = None
+        if order.payment_provider == "lava":
+            lava_result = await session.execute(
+                select(LavaPayment).where(LavaPayment.order_id == order.id)
+            )
+            lava_payment = lava_result.scalar_one_or_none()
 
         # Ищем ID платежа пользователя из транзакций
         user_payment_id = None
@@ -819,6 +825,12 @@ async def callback_user_order_detail(callback: CallbackQuery) -> None:
                     if len(parts) == 2:
                         user_payment_id = parts[1]
                         user_payment_type = "ton"
+                        break
+                elif tx.external_id.startswith("lava:"):
+                    parts = tx.external_id.split(":", 1)
+                    if len(parts) == 2:
+                        user_payment_id = parts[1]
+                        user_payment_type = "lava"
                         break
 
         # Фоллбэк для старых заказов без привязки transaction -> order
@@ -857,6 +869,8 @@ async def callback_user_order_detail(callback: CallbackQuery) -> None:
         "balance": "💎 С баланса",
         "ton": "💎 TON",
         "cryptobot": "🤖 CryptoBot",
+        "platega": "🏦 СБП / Platega",
+        "lava": "🌋 Lava / СБП",
     }
 
     # Названия статусов без эмодзи
@@ -911,8 +925,18 @@ async def callback_user_order_detail(callback: CallbackQuery) -> None:
     text += f"🏦 Способ: <b>{payment_method}</b>\n"
     if not is_balance_withdrawal:
         net_amount = float(order.price_usdt)
+        if order.payment_provider == "lava" and lava_payment:
+            fee_rub = lava_payment.amount_rub - lava_payment.base_amount_rub
+            text += f"💵 Стоимость: <b>{float(lava_payment.amount_usdt):.2f} USDT</b>\n"
+            text += f"💳 К оплате: <b>{float(lava_payment.amount_rub):.2f} RUB</b>\n"
+            text += (
+                f"📊 Комиссия: <b>{float(fee_rub):.2f} RUB</b> "
+                f"({float(lava_payment.fee_percent):g}%)\n"
+            )
+            text += f"🆔 Invoice ID: <code>{lava_payment.provider_invoice_id or '—'}</code>\n"
+            text += f"🔖 Lava Order ID: <code>{lava_payment.provider_order_id}</code>"
         # Для CryptoBot показываем комиссию
-        if order.payment_provider == "cryptobot":
+        elif order.payment_provider == "cryptobot":
             fee_percent = 3
             amount_with_fee = net_amount * 1.03
             fee_amount = amount_with_fee - net_amount
@@ -922,12 +946,20 @@ async def callback_user_order_detail(callback: CallbackQuery) -> None:
         else:
             text += f"💵 Сумма: <b>{net_amount:.2f} USDT</b>\n"
         # ID платежа пользователя
-        if user_payment_id:
+        if user_payment_id and not (
+            order.payment_provider == "lava" and lava_payment
+        ):
             if user_payment_type == "cryptobot":
                 text += f"🆔 Invoice ID: <b><code>#IV{user_payment_id}</code></b>"
             elif user_payment_type == "ton":
                 text += f"🆔 Event ID: <b><code>{user_payment_id}</code></b>"
-        elif payment_data and payment_data.provider_tx_id:
+            elif user_payment_type == "lava":
+                text += f"🆔 Invoice ID: <b><code>{user_payment_id}</code></b>"
+        elif (
+            not (order.payment_provider == "lava" and lava_payment)
+            and payment_data
+            and payment_data.provider_tx_id
+        ):
             text += f"🆔 ID: <b><code>{payment_data.provider_tx_id}</code></b>"
     else:
         text += f"💎 Списано с баланса"

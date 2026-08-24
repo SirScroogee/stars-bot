@@ -472,7 +472,6 @@ class UserService:
             }
         """
         # Всего пополнено USDT (из транзакций типа deposit)
-        from src.db.models import Transaction
         deposited_result = await self._session.execute(
             select(func.sum(Transaction.amount_usdt))
             .where(Transaction.user_id == user_id)

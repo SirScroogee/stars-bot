@@ -367,6 +367,15 @@ class FragmentAccountService:
 
         return True
 
+    async def set_transient_error(self, account_id: int, error_message: str) -> bool:
+        """Record an operational error without disabling an otherwise valid account."""
+        account = await self.get_account(account_id)
+        if not account:
+            return False
+        account.error_message = error_message
+        account.updated_at = datetime.utcnow()
+        return True
+
     async def increment_order_stats(
         self,
         account_id: int,
@@ -389,6 +398,7 @@ class FragmentAccountService:
         if success:
             account.successful_orders += 1
             account.total_ton_spent += ton_spent
+            account.error_message = None
         else:
             account.failed_orders += 1
 

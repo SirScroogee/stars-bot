@@ -1,4 +1,5 @@
 """Platega SBP payment integration."""
+import asyncio
 import html
 import json
 import logging
@@ -13,7 +14,6 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.queue import get_order_queue
 from src.db.models import (
     BalanceLedger,
     Order,
@@ -27,10 +27,9 @@ from src.db.models import (
 from src.db.session import async_session_factory
 from src.locales import t
 from src.services.bot_settings_service import get_platega_settings
+from src.services.order_runtime_service import enqueue_order_reliably, log_created_order
 from src.services.order_service import OrderService
-from src.services.rates_service import convert_usdt_to_currency, get_rates
 from src.services.telegram_logger import tg_logger
-from src.workers.order_worker import get_order_worker
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +47,6 @@ FINAL_STATUSES = {
     PLATEGA_EXPIRED,
     PLATEGA_CHARGEBACKED,
 }
-
-PLATEGA_SBP_FEE_PERCENT = Decimal("8")
-
 
 class PlategaError(Exception):
     """Base Platega integration error."""
@@ -135,6 +131,7 @@ async def _request_platega(
     *,
     json_body: dict[str, Any] | None = None,
     params: dict[str, Any] | None = None,
+    timeout_seconds: float = 10,
 ) -> dict[str, Any]:
     settings = await get_platega_settings()
     if not settings["enabled"]:
@@ -150,24 +147,35 @@ async def _request_platega(
         "Content-Type": "application/json",
     }
 
-    timeout = aiohttp.ClientTimeout(total=10)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.request(method, url, headers=headers, json=json_body, params=params) as response:
-            text = await response.text()
-            try:
-                data = json.loads(text) if text else {}
-            except json.JSONDecodeError:
-                data = {"raw": text}
+    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.request(
+                method,
+                url,
+                headers=headers,
+                json=json_body,
+                params=params,
+            ) as response:
+                text = await response.text()
+                try:
+                    data = json.loads(text) if text else {}
+                except json.JSONDecodeError:
+                    data = {"raw": text}
 
-            if response.status in (400, 401, 403):
-                raise PlategaError(f"Platega rejected request ({response.status}): {data}")
-            if response.status == 404:
-                raise PlategaError(f"Platega transaction not found: {data}")
-            if response.status >= 500:
-                raise PlategaError(f"Platega server error ({response.status}): {data}")
-            if response.status >= 300:
-                raise PlategaError(f"Platega API error ({response.status}): {data}")
-            return data
+                if response.status in (400, 401, 403):
+                    raise PlategaError(f"Platega rejected request ({response.status}): {data}")
+                if response.status == 404:
+                    raise PlategaError(f"Platega transaction not found: {data}")
+                if response.status >= 500:
+                    raise PlategaError(f"Platega server error ({response.status}): {data}")
+                if response.status >= 300:
+                    raise PlategaError(f"Platega API error ({response.status}): {data}")
+                return data
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        raise PlategaError(
+            f"Platega request failed for {method} {path}: {type(e).__name__ or 'network error'}"
+        ) from e
 
 
 def _extract_platega_rate(response: dict[str, Any]) -> Decimal:
@@ -235,10 +243,14 @@ async def _get_sbp_usdt_rub_rate() -> tuple[Decimal, str]:
     try:
         return await get_platega_usdt_rub_rate(), "platega"
     except PlategaError as e:
-        logger.warning("Falling back to common RUB rate because Platega rate is unavailable: %s", e)
-        rates = await get_rates()
-        fallback_rate = convert_usdt_to_currency(Decimal("1"), "rub", rates)
-        return fallback_rate, "fallback"
+        logger.warning("Could not get Platega SBP rate, trying CryptoBot fallback: %s", e)
+
+    try:
+        from src.services.cryptopay_service import get_usdt_rub_rate_from_cryptobot
+
+        return await get_usdt_rub_rate_from_cryptobot(), "cryptobot"
+    except Exception as e:
+        raise PlategaError(f"Could not get SBP USDT/RUB rate from Platega or CryptoBot: {e}") from e
 
 
 async def create_platega_payment(
@@ -255,7 +267,7 @@ async def create_platega_payment(
     if not settings["enabled"] or not settings["merchant_id"] or not settings["secret"]:
         raise PlategaConfigError("СБП временно недоступен: не заполнены настройки Platega")
 
-    fee_percent = PLATEGA_SBP_FEE_PERCENT
+    fee_percent = settings["fee_percent"]
     amount_to_pay_usdt = amount_usdt.quantize(
         Decimal("0.01"),
         rounding=ROUND_HALF_UP,
@@ -272,6 +284,7 @@ async def create_platega_payment(
     payment_metadata = dict(metadata)
     payment_metadata["sbp_usdt_rub_rate"] = str(usdt_rub_rate.quantize(Decimal("0.0001")))
     payment_metadata["sbp_rate_source"] = rate_source
+    payment_metadata["sbp_base_amount_rub"] = str(amount_rub)
     payment_metadata["sbp_display_amount_rub_with_fee"] = str(amount_with_fee_rub)
     expires_at = datetime.utcnow() + timedelta(minutes=settings["payment_ttl_minutes"])
     payload = f"{operation_type}:{user_id}:{int(datetime.utcnow().timestamp())}"
@@ -279,7 +292,7 @@ async def create_platega_payment(
     request_body = {
         "paymentMethod": settings["sbp_method_id"],
         "paymentDetails": {
-            "amount": float(amount_rub),
+            "amount": float(amount_with_fee_rub),
             "currency": "RUB",
         },
         "description": description,
@@ -303,7 +316,7 @@ async def create_platega_payment(
         provider_tx_id=provider_tx_id,
         status=PLATEGA_PENDING,
         amount_usdt=amount_usdt,
-        amount_rub=amount_rub,
+        amount_rub=amount_with_fee_rub,
         fee_percent=fee_percent,
         payment_url=pay_url,
         payload=payload,
@@ -327,7 +340,11 @@ async def create_platega_payment(
 
 
 async def check_platega_status(provider_tx_id: str) -> tuple[str, dict[str, Any]]:
-    response = await _request_platega("GET", f"/transaction/{provider_tx_id}")
+    response = await _request_platega(
+        "GET",
+        f"/transaction/{provider_tx_id}",
+        timeout_seconds=4.5,
+    )
     status = response.get("status")
     if not status and isinstance(response.get("transaction"), dict):
         status = response["transaction"].get("status")
@@ -346,7 +363,9 @@ def build_platega_payment_text(
     return (
         f"{title}\n\n"
         f"<blockquote>{item_line}\n"
-        f"Сумма покупки: <b>{amount_usdt:,.2f} USDT ({amount_rub:,.2f} RUB)</b>"
+        f"Сумма покупки: <b>{amount_usdt:,.2f} USDT</b>\n"
+        f"Комиссия СБП: <b>{fee_percent:g}%</b>\n"
+        f"К оплате: <b>{amount_rub:,.2f} RUB</b>"
         "</blockquote>\n\n"
         "Нажмите кнопку оплаты, затем бот сам проверит платеж. "
         "Можно также нажать «Проверить оплату» вручную.\n\n"
@@ -371,12 +390,11 @@ async def process_platega_payment(
         if payment.status in FINAL_STATUSES and not force_check:
             return PlategaProcessResult(status=payment.status, final=True)
 
-        if payment.expires_at and datetime.utcnow() > payment.expires_at and payment.status == PLATEGA_PENDING:
-            payment.status = PLATEGA_EXPIRED
-            payment.error_message = "Local payment TTL expired"
-            await session.commit()
-            await _edit_payment_message(bot, payment, PLATEGA_EXPIRED)
-            return PlategaProcessResult(status=PLATEGA_EXPIRED, final=True)
+        locally_expired = bool(
+            payment.expires_at
+            and datetime.utcnow() > payment.expires_at
+            and payment.status == PLATEGA_PENDING
+        )
 
         try:
             status, raw = await check_platega_status(payment.provider_tx_id)
@@ -388,6 +406,12 @@ async def process_platega_payment(
             return PlategaProcessResult(status=payment.status, final=False, message=str(e))
 
         if status == PLATEGA_PENDING:
+            if locally_expired:
+                payment.status = PLATEGA_EXPIRED
+                payment.error_message = "Local payment TTL expired after final provider check"
+                await session.commit()
+                await _edit_payment_message(bot, payment, PLATEGA_EXPIRED)
+                return PlategaProcessResult(status=PLATEGA_EXPIRED, final=True)
             await session.commit()
             return PlategaProcessResult(status=status, final=False)
 
@@ -395,10 +419,36 @@ async def process_platega_payment(
 
         if status == PLATEGA_CONFIRMED:
             processed, order_id = await _apply_confirmed_payment(session, payment)
+            if payment.status != PLATEGA_CONFIRMED:
+                effective_status = payment.status
+                await session.commit()
+                await _edit_payment_message(bot, payment, effective_status)
+                return PlategaProcessResult(
+                    status=effective_status,
+                    final=True,
+                    processed=False,
+                    message=payment.error_message,
+                )
             payment.confirmed_at = datetime.utcnow()
             await session.commit()
             if processed and order_id:
-                await _enqueue_order(order_id)
+                await _enqueue_order(
+                    order_id,
+                    paid_amount_rub=_get_paid_amount_rub(payment),
+                )
+            elif processed and payment.operation_type == "deposit":
+                db_user = await session.get(User, payment.user_id)
+                try:
+                    await tg_logger.log_deposit(
+                        user_id=payment.user_id,
+                        username=db_user.username if db_user else None,
+                        amount=payment.amount_usdt,
+                        currency="USDT",
+                        provider="СБП (Platega)",
+                        amount_rub=_get_paid_amount_rub(payment),
+                    )
+                except Exception:
+                    logger.exception("Could not log confirmed Platega deposit %s", payment.id)
             await _edit_payment_message(bot, payment, PLATEGA_CONFIRMED)
             return PlategaProcessResult(status=status, final=True, processed=processed)
 
@@ -425,9 +475,24 @@ async def process_pending_platega_payments(bot: Bot | None = None, *, limit: int
         )
         payment_ids = [row[0] for row in result.fetchall()]
 
+    if not payment_ids:
+        return 0
+
+    results = await asyncio.gather(
+        *(process_platega_payment(payment_id, bot=bot) for payment_id in payment_ids),
+        return_exceptions=True,
+    )
+
     processed = 0
-    for payment_id in payment_ids:
-        result = await process_platega_payment(payment_id, bot=bot)
+    for payment_id, result in zip(payment_ids, results):
+        if isinstance(result, BaseException):
+            logger.error(
+                "Unexpected error while processing Platega payment %s: %s",
+                payment_id,
+                result,
+                exc_info=(type(result), result, result.__traceback__),
+            )
+            continue
         if result.final:
             processed += 1
     return processed
@@ -481,12 +546,6 @@ async def _apply_confirmed_payment(
                 description=f"SBP deposit: +{payment.amount_usdt} USDT",
             )
         )
-        await tg_logger.log_deposit(
-            user_id=payment.user_id,
-            username=db_user.username,
-            amount=payment.amount_usdt,
-            currency="USDT (SBP)",
-        )
         return True, None
 
     if payment.operation_type not in ("stars", "premium"):
@@ -530,29 +589,52 @@ async def _apply_confirmed_payment(
     return created, order.id
 
 
-async def _enqueue_order(order_id: int) -> None:
-    worker = get_order_worker()
-    if worker:
-        await worker.enqueue_order(order_id)
-    else:
-        await get_order_queue().enqueue(order_id)
+async def _enqueue_order(order_id: int, *, paid_amount_rub: Decimal | None = None) -> None:
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(Order, User.username)
+            .join(User, User.id == Order.user_id)
+            .where(Order.id == order_id)
+        )
+        row = result.one_or_none()
+    if row:
+        order, username = row
+    await enqueue_order_reliably(order_id)
+    if row:
+        await log_created_order(order, username, paid_amount_rub=paid_amount_rub)
+
+
+def _get_paid_amount_rub(payment: PlategaPayment) -> Decimal:
+    try:
+        metadata = json.loads(payment.metadata_json or "{}")
+        return Decimal(
+            str(metadata.get("sbp_display_amount_rub_with_fee", payment.amount_rub))
+        )
+    except (json.JSONDecodeError, TypeError, ValueError, ArithmeticError):
+        logger.warning("Invalid RUB amount in Platega payment %s metadata", payment.id)
+        return payment.amount_rub
 
 
 async def _edit_payment_message(bot: Bot | None, payment: PlategaPayment, status: str) -> None:
-    if not bot or not payment.message_id:
+    if not bot:
         return
 
-    async with async_session_factory() as session:
-        user = await session.get(User, payment.user_id)
-
-    lang = user.language_code if user else "ru"
+    lang = "ru"
+    try:
+        async with async_session_factory() as session:
+            user = await session.get(User, payment.user_id)
+        if user:
+            lang = user.language_code
+    except Exception as e:
+        logger.warning("Could not load language for Platega payment %s: %s", payment.id, e)
     metadata = json.loads(payment.metadata_json or "{}")
+    received_title = t("common.payment_status.received_title", lang)
 
     if status == PLATEGA_CONFIRMED:
         if payment.operation_type == "deposit":
             text = (
-                "✅ <b>Пополнение выполнено</b>\n\n"
-                f"<blockquote>Зачислено: <b>{payment.amount_usdt:,.2f} USDT</b></blockquote>"
+                f"{received_title}\n\n"
+                f"<blockquote>Баланс пополнен на: <b>{payment.amount_usdt:,.2f} USDT</b></blockquote>"
             )
         else:
             recipient = metadata.get("recipient_username", "")
@@ -561,13 +643,25 @@ async def _edit_payment_message(bot: Bot | None, payment: PlategaPayment, status
                 quantity_line = t("common.order.quantity_stars", lang, amount=f"{quantity:,}")
             else:
                 quantity_line = t("common.order.quantity_premium", lang, months=quantity)
-            order = await _get_order(payment.order_id)
+            try:
+                order = await _get_order(payment.order_id)
+            except Exception as e:
+                logger.warning("Could not load order for Platega payment %s: %s", payment.id, e)
+                order = None
             order_key = order.order_key if order else f"PLG{payment.id:08d}"
+            price_text = f"{payment.amount_usdt:,.2f} USDT"
+            amount_rub = metadata.get("sbp_display_amount_rub_with_fee")
+            if amount_rub:
+                try:
+                    price_text += f" ({Decimal(str(amount_rub)):,.2f} RUB)"
+                except Exception:
+                    logger.warning("Invalid RUB amount in Platega payment %s metadata", payment.id)
             text = (
+                f"{received_title}\n\n"
                 f"{t('common.order.created_title', lang, order_key=order_key)}\n\n"
                 f"<blockquote>{t('common.order.recipient', lang, username=recipient)}\n"
                 f"{quantity_line}\n"
-                f"{t('common.order.price', lang, price=f'{payment.amount_usdt:,.2f}')}</blockquote>\n\n"
+                f"{t('common.order.price', lang, price=price_text)}</blockquote>\n\n"
                 f"{t('common.order.processing', lang)}"
             )
     elif status == PLATEGA_CHARGEBACKED:
@@ -580,15 +674,48 @@ async def _edit_payment_message(bot: Bot | None, payment: PlategaPayment, status
     else:
         text = "❌ <b>Платеж не прошел</b>\n\nСоздайте новый платеж или выберите другой способ оплаты."
 
+    if payment.message_id:
+        edit_text_error: Exception | None = None
+        try:
+            await bot.edit_message_text(
+                chat_id=payment.user_id,
+                message_id=payment.message_id,
+                text=text,
+                parse_mode="HTML",
+            )
+            return
+        except Exception as e:
+            if "message is not modified" in str(e).lower():
+                return
+            edit_text_error = e
+
+        try:
+            await bot.edit_message_caption(
+                chat_id=payment.user_id,
+                message_id=payment.message_id,
+                caption=text,
+                parse_mode="HTML",
+            )
+            return
+        except Exception as caption_error:
+            if "message is not modified" in str(caption_error).lower():
+                return
+            logger.warning(
+                "Could not edit Platega payment message %s, sending a new message "
+                "(text error: %s; caption error: %s)",
+                payment.id,
+                edit_text_error,
+                caption_error,
+            )
+
     try:
-        await bot.edit_message_text(
+        await bot.send_message(
             chat_id=payment.user_id,
-            message_id=payment.message_id,
             text=text,
             parse_mode="HTML",
         )
-    except Exception as e:
-        logger.debug("Could not edit Platega payment message %s: %s", payment.id, e)
+    except Exception:
+        logger.exception("Could not notify user about Platega payment %s", payment.id)
 
 
 async def _get_order(order_id: int | None) -> Order | None:

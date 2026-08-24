@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from src.db.models import BotChannel
 from src.db.session import async_session_factory
+from src.services.bot_settings_service import BotSettingsService, invalidate_bot_settings_cache
 
 logger = logging.getLogger(__name__)
 
@@ -84,5 +85,33 @@ async def on_bot_demoted_from_admin(event: ChatMemberUpdated) -> None:
 
         if bot_channel:
             bot_channel.is_active = False
+            cleared_required_subscription = False
+            settings_service = BotSettingsService(session)
+            settings = await settings_service.get_settings()
+            required_channel = str(settings.get("required_subscription_channel") or "")
+            channel_values = {str(chat.id)}
+            if chat.username:
+                channel_values.add(f"@{chat.username}")
+                channel_values.add(chat.username)
+
+            if required_channel in channel_values:
+                await settings_service.set_setting(
+                    "required_subscription_channel",
+                    "",
+                    old_value=required_channel,
+                )
+                await settings_service.set_setting(
+                    "required_subscription_url",
+                    "",
+                    old_value=str(settings.get("required_subscription_url") or ""),
+                )
+                cleared_required_subscription = True
+                logger.warning(
+                    "Cleared required subscription because bot was removed from active channel '%s'",
+                    chat.title,
+                )
+
             await session.commit()
+            if cleared_required_subscription:
+                invalidate_bot_settings_cache()
             logger.info(f"Deactivated channel '{chat.title}' in bot_channels")

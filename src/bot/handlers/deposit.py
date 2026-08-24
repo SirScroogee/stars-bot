@@ -21,6 +21,7 @@ from src.bot.keyboards.deposit import (
     get_payment_error_keyboard,
     get_payment_method_keyboard,
     get_payment_pending_keyboard,
+    get_lava_payment_keyboard,
     get_platega_payment_keyboard,
     get_ton_payment_keyboard,
 )
@@ -40,7 +41,15 @@ from src.services.ton_payment_service import (
     check_ton_payment,
 )
 from src.services.telegram_logger import tg_logger
-from src.services.bot_settings_service import get_cryptobot_fee
+from src.services.bot_settings_service import get_cryptobot_fee, get_lava_settings
+from src.services.lava_service import (
+    LavaConfigError,
+    LavaCreatePendingError,
+    LavaError,
+    build_lava_payment_text,
+    create_lava_payment,
+    process_lava_payment,
+)
 from src.services.platega_service import (
     PlategaConfigError,
     PlategaError,
@@ -48,6 +57,7 @@ from src.services.platega_service import (
     create_platega_payment,
     process_platega_payment,
 )
+from src.services.rub_rate_service import format_usdt_with_rub
 from src.bot.menu_media import edit_menu_message
 
 logger = logging.getLogger(__name__)
@@ -67,6 +77,23 @@ class DepositStates(StatesGroup):
     waiting_payment = State()  # CryptoBot
     waiting_ton_payment = State()  # TON прямой перевод
     waiting_platega_payment = State()  # СБП Platega
+    waiting_lava_payment = State()  # СБП Lava
+
+
+async def get_deposit_payment_methods_keyboard(lang: str):
+    """Build payment methods and hide Lava until it is enabled and configured."""
+    try:
+        settings = await get_lava_settings()
+        lava_enabled = settings["enabled"] and settings["configured"]
+        lava_fee = settings["fee_percent"]
+    except Exception:
+        lava_enabled = False
+        lava_fee = Decimal("3.4")
+    return get_payment_method_keyboard(
+        lang,
+        lava_enabled=lava_enabled,
+        lava_fee_percent=lava_fee,
+    )
 
 
 async def safe_delete_message(message: Message) -> None:
@@ -200,6 +227,8 @@ async def message_deposit_amount(message: Message, state: FSMContext) -> None:
 
     try:
         amount = Decimal(message.text.strip().replace(",", "."))
+        if not amount.is_finite():
+            raise ValueError("Amount must be finite")
     except Exception:
         if bot_message_id:
             await edit_bot_message(
@@ -258,10 +287,10 @@ async def message_deposit_amount(message: Message, state: FSMContext) -> None:
             bot_message_id,
             text=(
                 f"{t('deposit.select_method', lang)}\n\n"
-                f"{t('deposit.amount_label', lang, amount=f'{amount:,.2f}')}\n\n"
+                f"{t('deposit.amount_label', lang, amount=await format_usdt_with_rub(amount))}\n\n"
                 f"{t('deposit.select_method_prompt', lang)}"
             ),
-            reply_markup=get_payment_method_keyboard(lang),
+            reply_markup=await get_deposit_payment_methods_keyboard(lang),
         )
 
 
@@ -283,6 +312,12 @@ async def callback_pay_platega_sbp(callback: CallbackQuery, state: FSMContext) -
     await _create_platega_payment(callback, state)
 
 
+@router.callback_query(F.data == DepositCallback.PAY_LAVA, DepositStates.waiting_method)
+async def callback_pay_lava(callback: CallbackQuery, state: FSMContext) -> None:
+    """Оплата пополнения через СБП Lava."""
+    await _create_lava_payment(callback, state)
+
+
 async def _create_cryptobot_payment(callback: CallbackQuery, state: FSMContext) -> None:
     """Создать инвойс и показать кнопку оплаты."""
     data = await state.get_data()
@@ -299,8 +334,8 @@ async def _create_cryptobot_payment(callback: CallbackQuery, state: FSMContext) 
         callback.message,
         text=(
             f"{t('deposit.creating', lang)}\n\n"
-            f"{t('deposit.to_pay', lang, amount=f'{amount_with_fee:,.2f}')}\n"
-            f"{t('deposit.will_credit', lang, amount=f'{amount:,.2f}')}\n\n"
+            f"{t('deposit.to_pay', lang, amount=await format_usdt_with_rub(amount_with_fee))}\n"
+            f"{t('deposit.will_credit', lang, amount=await format_usdt_with_rub(amount))}\n\n"
             f"{t('deposit.please_wait', lang)}"
         ),
     )
@@ -325,8 +360,8 @@ async def _create_cryptobot_payment(callback: CallbackQuery, state: FSMContext) 
             callback.message,
             text=(
                 f"{t('deposit.cryptobot_title', lang)}\n\n"
-                f"{t('deposit.to_pay', lang, amount=f'{amount_with_fee:,.2f}')}\n"
-                f"{t('deposit.will_credit', lang, amount=f'{amount:,.2f}')}\n\n"
+                f"{t('deposit.to_pay', lang, amount=await format_usdt_with_rub(amount_with_fee))}\n"
+                f"{t('deposit.will_credit', lang, amount=await format_usdt_with_rub(amount))}\n\n"
                 f"{t('deposit.cryptobot_instructions', lang)}\n"
                 f"{t('deposit.payment_time', lang)}"
             ),
@@ -360,7 +395,7 @@ async def _create_ton_payment(callback: CallbackQuery, state: FSMContext) -> Non
         callback.message,
         text=(
             f"{t('deposit.ton_title', lang)}\n\n"
-            f"{t('deposit.amount_label', lang, amount=f'{amount:,.2f}')}\n\n"
+            f"{t('deposit.amount_label', lang, amount=await format_usdt_with_rub(amount))}\n\n"
             f"{t('deposit.ton_getting_rate', lang)}"
         ),
     )
@@ -404,7 +439,7 @@ async def _create_ton_payment(callback: CallbackQuery, state: FSMContext) -> Non
         callback.message,
         text=(
             f"{t('deposit.ton_title', lang)}\n\n"
-            f"{t('deposit.amount_label', lang, amount=f'{amount:,.2f}')}\n"
+            f"{t('deposit.amount_label', lang, amount=await format_usdt_with_rub(amount))}\n"
             f"{t('deposit.ton_amount', lang, amount=f'{amount_ton:,.4f}')}\n"
             f"{t('deposit.ton_rate', lang, rate=f'{ton_rate:,.2f}')}\n\n"
             f"{t('deposit.ton_instructions', lang)}"
@@ -428,8 +463,8 @@ async def _create_platega_payment(callback: CallbackQuery, state: FSMContext) ->
     await safe_edit_message(
         callback.message,
         text=(
-            "🏦 <b>Оплата по СБП</b>\n\n"
-            f"{t('deposit.amount_label', lang, amount=f'{amount:,.2f}')}\n\n"
+            '<tg-emoji emoji-id="5264895611517300926">🏦</tg-emoji> <b>Оплата по СБП</b>\n\n'
+            f"{t('deposit.amount_label', lang, amount=await format_usdt_with_rub(amount))}\n\n"
             f"{t('deposit.please_wait', lang)}"
         ),
     )
@@ -451,7 +486,7 @@ async def _create_platega_payment(callback: CallbackQuery, state: FSMContext) ->
         await state.set_state(DepositStates.waiting_platega_payment)
 
         text = build_platega_payment_text(
-            title="🏦 <b>Оплата по СБП</b>",
+            title='<tg-emoji emoji-id="5264895611517300926">🏦</tg-emoji> <b>Оплата по СБП</b>',
             item_line=f"Зачислится: <b>{amount:,.2f} USDT</b>",
             amount_usdt=created.amount_to_pay_usdt,
             amount_rub=created.amount_with_fee_rub,
@@ -481,12 +516,86 @@ async def _create_platega_payment(callback: CallbackQuery, state: FSMContext) ->
     await callback.answer()
 
 
+async def _create_lava_payment(callback: CallbackQuery, state: FSMContext) -> None:
+    """Create a Lava SBP invoice for a balance deposit."""
+    await safe_callback_answer(callback)
+    data = await state.get_data()
+    amount = Decimal(data.get("amount", "0"))
+    lang = data.get("lang", "ru")
+    item_line = t(
+        "common.lava_payment.deposit_item",
+        lang,
+        amount=f"{amount:,.2f}",
+    )
+    await safe_edit_message(
+        callback.message,
+        text=t("common.lava_payment.creating", lang, item_line=item_line),
+    )
+
+    try:
+        bot_info = await callback.bot.get_me()
+        return_url = f"https://t.me/{bot_info.username}?start=lava" if bot_info.username else "https://t.me"
+        created = await create_lava_payment(
+            user_id=callback.from_user.id,
+            operation_type="deposit",
+            amount_usdt=amount,
+            description=f"Balance deposit: {amount} USDT",
+            metadata={"amount_usdt": str(amount)},
+            return_url=return_url,
+            message_id=callback.message.message_id,
+        )
+        await state.update_data(lava_payment_id=created.payment.id)
+        await state.set_state(DepositStates.waiting_lava_payment)
+        await safe_edit_message(
+            callback.message,
+            text=build_lava_payment_text(
+                lang=lang,
+                item_line=item_line,
+                amount_usdt=created.amount_to_pay_usdt,
+                base_amount_rub=created.base_amount_rub,
+                amount_rub=created.amount_with_fee_rub,
+                fee_percent=created.fee_percent,
+                ttl_minutes=created.ttl_minutes,
+            ),
+            reply_markup=get_lava_payment_keyboard(created.pay_url, lang),
+        )
+    except LavaCreatePendingError as error:
+        await state.update_data(lava_payment_id=error.payment_id)
+        await state.set_state(DepositStates.waiting_lava_payment)
+        await safe_edit_message(
+            callback.message,
+            text=t("common.lava_payment.creation_uncertain", lang),
+            reply_markup=get_lava_payment_keyboard(None, lang),
+        )
+    except LavaConfigError:
+        await safe_edit_message(
+            callback.message,
+            text=t("common.lava_payment.unavailable", lang),
+            reply_markup=get_payment_error_keyboard(lang),
+        )
+    except LavaError as error:
+        logger.error("Failed to create Lava deposit payment: %s", error)
+        await safe_edit_message(
+            callback.message,
+            text=t("common.lava_payment.create_error", lang),
+            reply_markup=get_payment_error_keyboard(lang),
+        )
+    except Exception:
+        logger.exception("Unexpected error while creating Lava deposit payment")
+        await safe_edit_message(
+            callback.message,
+            text=t("common.lava_payment.create_error", lang),
+            reply_markup=get_payment_error_keyboard(lang),
+        )
+
+
 @router.callback_query(F.data == DepositCallback.CHECK_PAYMENT, DepositStates.waiting_payment)
 async def callback_check_payment(callback: CallbackQuery, state: FSMContext) -> None:
     """Проверка оплаты CryptoBot."""
     data = await state.get_data()
     invoice_id = data.get("invoice_id")
     amount = Decimal(data.get("amount", "0"))  # Сумма без наценки (зачисляется)
+    amount_with_fee = Decimal(data.get("amount_with_fee", str(amount)))
     lang = data.get("lang", "ru")
 
     if not invoice_id:
@@ -574,7 +683,9 @@ async def callback_check_payment(callback: CallbackQuery, state: FSMContext) -> 
                     user_id=user_id,
                     username=callback.from_user.username,
                     amount=amount,
-                    currency="USDT (CryptoBot)",
+                    currency="USDT",
+                    provider="CryptoBot",
+                    paid_amount_usdt=amount_with_fee,
                 )
             else:
                 await safe_edit_message(
@@ -631,6 +742,34 @@ async def callback_check_platega_payment(callback: CallbackQuery, state: FSMCont
     await callback.answer(result.message or t("deposit.error_check", lang), show_alert=True)
 
 
+@router.callback_query(F.data == DepositCallback.CHECK_LAVA_PAYMENT, DepositStates.waiting_lava_payment)
+async def callback_check_lava_payment(callback: CallbackQuery, state: FSMContext) -> None:
+    """Manually check a Lava deposit."""
+    data = await state.get_data()
+    lang = data.get("lang", "ru")
+    payment_id = data.get("lava_payment_id")
+    if not payment_id:
+        await callback.answer(t("deposit.error_not_found", lang), show_alert=True)
+        return
+
+    try:
+        result = await process_lava_payment(
+            int(payment_id), bot=callback.bot, force_check=True
+        )
+    except Exception:
+        logger.exception("Unexpected error while checking Lava deposit payment %s", payment_id)
+        await callback.answer(t("deposit.error_check", lang), show_alert=True)
+        return
+    if result.status == "pending":
+        await callback.answer(t("deposit.not_received", lang), show_alert=True)
+        return
+    if result.final:
+        await state.clear()
+        await safe_callback_answer(callback)
+        return
+    await callback.answer(result.message or t("deposit.error_check", lang), show_alert=True)
+
+
 @router.callback_query(F.data == DepositCallback.CANCEL_PAYMENT, DepositStates.waiting_platega_payment)
 async def callback_cancel_platega_payment(callback: CallbackQuery, state: FSMContext) -> None:
     """Отмена ожидания оплаты СБП."""
@@ -646,6 +785,23 @@ async def callback_cancel_platega_payment(callback: CallbackQuery, state: FSMCon
         reply_markup=get_back_to_deposit_keyboard(lang),
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == DepositCallback.CANCEL_PAYMENT, DepositStates.waiting_lava_payment)
+async def callback_cancel_lava_payment(callback: CallbackQuery, state: FSMContext) -> None:
+    """Stop showing the Lava payment flow; paid invoices remain protected."""
+    data = await state.get_data()
+    lang = data.get("lang", "ru")
+    await state.clear()
+    await safe_edit_message(
+        callback.message,
+        text=(
+            f"{t('deposit.cancelled_title', lang)}\n\n"
+            f"{t('deposit.cancelled_text', lang)}"
+        ),
+        reply_markup=get_back_to_deposit_keyboard(lang),
+    )
+    await safe_callback_answer(callback)
 
 
 @router.callback_query(F.data == DepositCallback.CANCEL_PAYMENT, DepositStates.waiting_payment)
@@ -784,7 +940,9 @@ async def callback_check_ton_payment(callback: CallbackQuery, state: FSMContext)
                     user_id=user_id,
                     username=callback.from_user.username,
                     amount=amount,
-                    currency=f"USDT (TON {payment['amount_ton']:.4f})",
+                    currency="USDT",
+                    provider="TON",
+                    provider_amount=f"{payment['amount_ton']:,.4f} TON",
                 )
             else:
                 await safe_edit_message(
@@ -865,9 +1023,9 @@ async def callback_back_to_method(callback: CallbackQuery, state: FSMContext) ->
         callback.message,
         text=(
             f"{t('deposit.select_method', lang)}\n\n"
-            f"{t('deposit.amount_label', lang, amount=f'{amount:,.2f}')}\n\n"
+            f"{t('deposit.amount_label', lang, amount=await format_usdt_with_rub(amount))}\n\n"
             f"{t('deposit.select_method_prompt', lang)}"
         ),
-        reply_markup=get_payment_method_keyboard(lang),
+        reply_markup=await get_deposit_payment_methods_keyboard(lang),
     )
     await callback.answer()

@@ -49,6 +49,40 @@ async def reset_crypto_client():
     logger.info("CryptoPay client reset")
 
 
+def _exchange_rate_field(exchange_rate, field_name: str):
+    if isinstance(exchange_rate, dict):
+        return exchange_rate.get(field_name)
+    return getattr(exchange_rate, field_name, None)
+
+
+async def get_usdt_rub_rate_from_cryptobot() -> Decimal:
+    """Получить курс RUB за 1 USDT через CryptoBot Crypto Pay API."""
+    crypto = await get_crypto_client()
+    exchange_rates = await crypto.get_exchange_rates()
+
+    for exchange_rate in exchange_rates or []:
+        source = str(_exchange_rate_field(exchange_rate, "source") or "").upper()
+        target = str(_exchange_rate_field(exchange_rate, "target") or "").upper()
+        is_valid = _exchange_rate_field(exchange_rate, "is_valid")
+        if is_valid is False or str(is_valid).lower() == "false":
+            continue
+
+        raw_rate = _exchange_rate_field(exchange_rate, "rate")
+        if raw_rate in (None, ""):
+            continue
+
+        rate = Decimal(str(raw_rate))
+        if rate <= 0:
+            continue
+
+        if source == "USDT" and target == "RUB":
+            return rate
+        if source == "RUB" and target == "USDT":
+            return Decimal("1") / rate
+
+    raise ValueError("CryptoBot USDT/RUB exchange rate not found")
+
+
 async def create_deposit_invoice(
     amount: Decimal,
     user_id: int,

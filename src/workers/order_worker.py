@@ -22,8 +22,11 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Awaitable, Callable, Optional
+
+from sqlalchemy import select
 
 from src.api_clients.fragment import FragmentClient
 from src.api_clients.fragment.config import FragmentConfig
@@ -32,6 +35,7 @@ from src.db.models import Order, OrderStatus, User, FragmentAccountStatus
 from src.db.session import async_session_factory
 from src.services.fragment_account_service import FragmentAccountService, FragmentAccountData
 from src.services.order_service import OrderService
+from src.services.order_attention_service import notify_order_attention
 from src.services.payment_service import PaymentErrorType, PaymentService
 from src.services.telegram_logger import tg_logger
 
@@ -336,6 +340,178 @@ class OrderWorker:
         if isinstance(self._queue, RedisQueue):
             await self._queue.ack(order_id)
 
+    @staticmethod
+    def _can_retry(order: Order, item: QueueItem) -> bool:
+        return order.retry_count < item.max_retries
+
+    async def _fail_order(
+        self,
+        order_id: int,
+        error_code: str,
+        error_message: str,
+    ) -> bool:
+        """Finalize any active order through one refund/log/notification path."""
+        async with async_session_factory() as session:
+            order_service = OrderService(session)
+            order_result = await session.execute(
+                select(Order).where(Order.id == order_id).with_for_update()
+            )
+            order = order_result.scalar_one_or_none()
+            if not order:
+                await self._ack_if_redis(order_id)
+                return False
+
+            changed = await order_service.set_failed(
+                order_id,
+                error_message,
+                error_code=error_code,
+            )
+            if not changed:
+                await session.rollback()
+                await self._ack_if_redis(order_id)
+                return False
+
+            user_result = await session.execute(
+                select(User).where(User.id == order.user_id).with_for_update()
+            )
+            user = user_result.scalar_one_or_none()
+            if user and order.payment_provider == "balance":
+                if order.price_usdt > 0:
+                    user.balance_usdt += order.price_usdt
+                    refund_description = f"{order.price_usdt} USDT"
+                elif order.product_type == "stars":
+                    user.balance_stars += Decimal(order.quantity)
+                    refund_description = f"{order.quantity} Stars"
+                elif order.product_type == "premium":
+                    user.balance_premium_months += order.quantity
+                    refund_description = f"{order.quantity} Premium months"
+                else:
+                    refund_description = "unknown balance amount"
+                logger.info(
+                    "Refunded %s to user %s for failed order %s",
+                    refund_description,
+                    order.user_id,
+                    order_id,
+                )
+
+            await session.commit()
+            await self._ack_if_redis(order_id)
+            self._stats["orders_failed"] += 1
+
+            await tg_logger.log_order_failed(
+                order_id=order_id,
+                user_id=order.user_id,
+                username=user.username if user else None,
+                reason=error_message,
+            )
+            await tg_logger.log_order_error(
+                order_id=order_id,
+                error_message=error_message,
+                user_id=order.user_id,
+                username=user.username if user else None,
+            )
+
+            if self._on_order_failed:
+                try:
+                    await self._on_order_failed(order, error_message)
+                except Exception:
+                    logger.exception("Error in on_order_failed callback for order %s", order_id)
+            return True
+
+    async def _retry_or_fail(
+        self,
+        item: QueueItem,
+        *,
+        error_code: str,
+        error_message: str,
+        delay: float,
+        notify_immediately: bool = False,
+    ) -> None:
+        order_id = item.order_id
+        should_retry = False
+        durable_retry_count = item.retry_count
+
+        async with async_session_factory() as session:
+            order_service = OrderService(session)
+            order = await order_service.get_order(order_id)
+            if not order or order.status not in {
+                OrderStatus.PENDING.value,
+                OrderStatus.PROCESSING.value,
+            }:
+                await self._ack_if_redis(order_id)
+                return
+
+            next_retry_at = datetime.utcnow() + timedelta(seconds=delay)
+            if self._can_retry(order, item):
+                durable_retry_count = order.retry_count + 1
+                if order.status == OrderStatus.PENDING.value:
+                    should_retry = await order_service.record_pending_deferral(
+                        order_id,
+                        error_code=error_code,
+                        error_message=error_message,
+                        next_retry_at=next_retry_at,
+                        count_retry=True,
+                    )
+                else:
+                    should_retry = await order_service.return_to_pending(
+                        order_id,
+                        error_code=error_code,
+                        error_message=error_message,
+                        next_retry_at=next_retry_at,
+                        count_retry=True,
+                    )
+            await session.commit()
+
+        if should_retry:
+            item.retry_count = durable_retry_count
+            await self._queue.requeue(item, delay=delay, count_retry=False)
+            if notify_immediately:
+                await notify_order_attention(order_id)
+            return
+
+        await self._fail_order(order_id, error_code, error_message)
+
+    async def _defer_resource_order(
+        self,
+        item: QueueItem,
+        *,
+        error_code: str,
+        error_message: str,
+        delay: float,
+    ) -> None:
+        """Keep a paid order pending for a recoverable resource shortage."""
+        order_id = item.order_id
+        next_retry_at = datetime.utcnow() + timedelta(seconds=delay)
+        deferred = False
+        async with async_session_factory() as session:
+            order_service = OrderService(session)
+            order = await order_service.get_order(order_id)
+            if not order:
+                await self._ack_if_redis(order_id)
+                return
+            if order.status == OrderStatus.PROCESSING.value:
+                deferred = await order_service.return_to_pending(
+                    order_id,
+                    error_code=error_code,
+                    error_message=error_message,
+                    next_retry_at=next_retry_at,
+                )
+            elif order.status == OrderStatus.PENDING.value:
+                deferred = await order_service.record_pending_deferral(
+                    order_id,
+                    error_code=error_code,
+                    error_message=error_message,
+                    next_retry_at=next_retry_at,
+                )
+            await session.commit()
+
+        if not deferred:
+            await self._ack_if_redis(order_id)
+            return
+
+        await self._queue.requeue(item, delay=delay, count_retry=False)
+        await notify_order_attention(order_id)
+
     async def _maintenance_loop(self) -> None:
         """Periodically recover stuck orders and requeue retryable failed orders."""
         while self._running:
@@ -346,7 +522,7 @@ class OrderWorker:
 
                 await self._recover_stuck_orders(
                     recover_redis_processing=False,
-                    recover_pending=False,
+                    recover_pending=True,
                 )
                 await self._recover_retryable_failed_orders()
             except asyncio.CancelledError:
@@ -509,7 +685,7 @@ class OrderWorker:
             try:
                 from src.services.recipient_service import clear_client_cache, invalidate_account_cache
 
-                clear_client_cache(account_id)
+                await clear_client_cache(account_id)
                 invalidate_account_cache()
             except Exception as cache_error:
                 logger.warning(f"Failed to clear Fragment recipient cache for account {account_id}: {cache_error}")
@@ -531,10 +707,16 @@ class OrderWorker:
         try:
             from src.services.recipient_service import clear_client_cache, invalidate_account_cache
 
-            clear_client_cache(account_id)
+            await clear_client_cache(account_id)
             invalidate_account_cache()
         except Exception as cache_error:
             logger.warning(f"Failed to clear Fragment recipient cache for account {account_id}: {cache_error}")
+
+    async def _record_account_error(self, account_id: int, error: str) -> None:
+        async with async_session_factory() as session:
+            service = FragmentAccountService(session)
+            await service.set_transient_error(account_id, error)
+            await session.commit()
 
     async def _run_loop(self) -> None:
         """
@@ -595,6 +777,15 @@ class OrderWorker:
     def _on_task_done(self, task: asyncio.Task) -> None:
         """Callback при завершении задачи обработки заказа."""
         self._active_tasks.discard(task)
+        if not task.cancelled():
+            exception = task.exception()
+            if exception:
+                logger.error(
+                    "[%s] Order task ended with an unhandled exception: %s",
+                    self._worker_id,
+                    exception,
+                    exc_info=(type(exception), exception, exception.__traceback__),
+                )
         # Семафор освобождается в _process_order_with_cleanup
 
     async def _process_order_with_cleanup(self, item: QueueItem) -> None:
@@ -615,22 +806,32 @@ class OrderWorker:
             )
             self._stats["orders_processed"] += 1
         except asyncio.TimeoutError:
+            error_message = f"Order processing timed out after {self._order_timeout}s"
             logger.error(
-                f"[{self._worker_id}] Order {item.order_id} processing timed out after {self._order_timeout}s"
+                f"[{self._worker_id}] Order {item.order_id} {error_message.lower()}"
             )
             self._stats["orders_processed"] += 1
-            self._stats["orders_failed"] += 1
-            # Возвращаем заказ в очередь для повторной обработки
-            if item.can_retry:
-                delay = self._retry_delay_base * (2 ** item.retry_count)
-                await self._queue.requeue(item, delay=delay)
-                logger.warning(f"[{self._worker_id}] Order {item.order_id} requeued after timeout")
+            delay = self._retry_delay_base * (2 ** item.retry_count)
+            await self._retry_or_fail(
+                item,
+                error_code="processing_timeout",
+                error_message=error_message,
+                delay=delay,
+                notify_immediately=True,
+            )
         except Exception as e:
             logger.exception(
                 f"[{self._worker_id}] Unhandled error processing order {item.order_id}: {e}"
             )
             self._stats["orders_processed"] += 1
-            self._stats["orders_failed"] += 1
+            delay = self._retry_delay_base * (2 ** item.retry_count)
+            await self._retry_or_fail(
+                item,
+                error_code="worker_exception",
+                error_message=f"{type(e).__name__}: {e}",
+                delay=delay,
+                notify_immediately=True,
+            )
         finally:
             # Удаляем из активных
             self._active_orders.discard(item.order_id)
@@ -661,9 +862,13 @@ class OrderWorker:
                 use_pool = False  # Fallback клиент не в пуле
             else:
                 logger.error(f"[{self._worker_id}] No Fragment accounts available for order {order_id}")
-                # Возвращаем в очередь с задержкой
-                delay = self._retry_delay_base * (2 ** item.retry_count)
-                await self._queue.requeue(item, delay=delay)
+                delay = self._insufficient_funds_retry_delay
+                await self._defer_resource_order(
+                    item,
+                    error_code="no_fragment_account",
+                    error_message="No active Fragment accounts are available",
+                    delay=delay,
+                )
                 logger.warning(f"[{self._worker_id}] Order {order_id} requeued, waiting for available account")
                 return
         else:
@@ -683,7 +888,10 @@ class OrderWorker:
             order_service = OrderService(session)
 
             # 1. Получаем заказ
-            order = await order_service.get_order(order_id)
+            order_result = await session.execute(
+                select(Order).where(Order.id == order_id).with_for_update()
+            )
+            order = order_result.scalar_one_or_none()
 
             if order is None:
                 logger.error(f"Order {order_id} not found")
@@ -733,7 +941,7 @@ class OrderWorker:
                 return
 
             # 3. Устанавливаем статус PROCESSING
-            if not await order_service.set_processing(order_id):
+            if not await order_service.set_processing(order_id, fragment_account_id=account_id):
                 logger.warning(f"Order {order_id} cannot be set to PROCESSING")
                 await self._ack_if_redis(order_id)
                 if account_id:
@@ -786,6 +994,7 @@ class OrderWorker:
 
                 await order_service.set_completed(order_id, tx_hash, ton_spent)
                 await session.commit()
+                self._stats["orders_succeeded"] += 1
 
                 # Обновляем статистику аккаунта (БД + warmth)
                 if account_id:
@@ -799,7 +1008,6 @@ class OrderWorker:
                 logger.info(f"Order {order_id} completed successfully: {tx_hash}")
 
                 # Получаем данные пользователя для логирования
-                from sqlalchemy import select
                 user_result = await session.execute(
                     select(User).where(User.id == order.user_id)
                 )
@@ -832,12 +1040,14 @@ class OrderWorker:
                     # Удаляем клиент из пула - сессия больше не валидна
                     await self._remove_client_from_pool(account_id)
 
-                # Возвращаем заказ в очередь (попробуем другим аккаунтом)
-                await order_service.return_to_pending(order_id)
-                await session.commit()
-
                 delay = self._retry_delay_base
-                await self._queue.requeue(item, delay=delay)
+                await self._retry_or_fail(
+                    item,
+                    error_code=PaymentErrorType.SESSION_EXPIRED.value,
+                    error_message=result.error_message or "Fragment session expired",
+                    delay=delay,
+                    notify_immediately=True,
+                )
 
                 logger.warning(
                     f"Order {order_id} will be retried with different account: {result.error_message}"
@@ -854,48 +1064,67 @@ class OrderWorker:
                     self._update_warmth_on_order_complete(account_id, success=False)
                     await self._remove_client_from_pool(account_id)
 
-                if item.can_retry:
-                    await order_service.return_to_pending(order_id)
-                    await session.commit()
-                    await self._queue.requeue(item, delay=self._retry_delay_base)
+                if self._can_retry(order, item):
+                    await self._retry_or_fail(
+                        item,
+                        error_code=PaymentErrorType.ACCESS_DENIED.value,
+                        error_message=result.error_message or "Fragment access denied",
+                        delay=self._retry_delay_base,
+                        notify_immediately=True,
+                    )
                     logger.warning(
                         f"Order {order_id} will be retried with another Fragment account: "
                         f"{result.error_message}"
                     )
                 else:
                     error_msg = result.error_message or "Fragment access denied"
-                    await order_service.set_failed(order_id, error_msg)
-                    await session.commit()
+                    await self._fail_order(
+                        order_id,
+                        PaymentErrorType.ACCESS_DENIED.value,
+                        error_msg,
+                    )
                     logger.error(f"Order {order_id} failed after access denied: {error_msg}")
 
             elif result.error_type == PaymentErrorType.INSUFFICIENT_FUNDS:
-                await order_service.return_to_pending(order_id)
-                await session.commit()
-
                 if account_id:
+                    await self._record_account_error(
+                        account_id,
+                        result.error_message or "Insufficient Fragment funds",
+                    )
                     await self._update_account_stats(account_id, success=False)
                     self._update_warmth_on_order_complete(account_id, success=False)
 
-                item.retry_count = 0
-                await self._queue.requeue(item, delay=self._insufficient_funds_retry_delay)
+                await self._defer_resource_order(
+                    item,
+                    error_code=PaymentErrorType.INSUFFICIENT_FUNDS.value,
+                    error_message=result.error_message or "Insufficient Fragment funds",
+                    delay=self._insufficient_funds_retry_delay,
+                )
 
                 logger.warning(
                     f"Order {order_id} delayed for insufficient funds retry in "
                     f"{self._insufficient_funds_retry_delay}s: {result.error_message}"
                 )
 
-            elif result.should_retry and item.can_retry:
-                # Временная ошибка: возвращаем в очередь
-                await order_service.return_to_pending(order_id)
-                await session.commit()
-
+            elif result.should_retry and self._can_retry(order, item):
                 # Обновляем статистику (неуспешная попытка)
                 if account_id:
                     await self._update_account_stats(account_id, success=False)
                     self._update_warmth_on_order_complete(account_id, success=False)
 
                 delay = self._retry_delay_base * (2 ** item.retry_count)
-                await self._queue.requeue(item, delay=delay)
+                error_code = (
+                    result.error_type.value
+                    if result.error_type
+                    else PaymentErrorType.UNKNOWN_ERROR.value
+                )
+                await self._retry_or_fail(
+                    item,
+                    error_code=error_code,
+                    error_message=result.error_message or "Unknown temporary error",
+                    delay=delay,
+                    notify_immediately=result.error_type == PaymentErrorType.TRANSACTION_TIMEOUT,
+                )
 
                 logger.warning(
                     f"Order {order_id} will be retried in {delay}s: {result.error_message}"
@@ -904,57 +1133,20 @@ class OrderWorker:
             else:
                 # Постоянная ошибка или исчерпаны retry
                 error_msg = result.error_message or "Unknown error"
-                await order_service.set_failed(order_id, error_msg)
 
                 # Обновляем статистику аккаунта (БД + warmth)
                 if account_id:
                     await self._update_account_stats(account_id, success=False)
                     self._update_warmth_on_order_complete(account_id, success=False)
 
-                # Возвращаем деньги на баланс если оплата была с баланса
-                from sqlalchemy import select
-                if order.payment_provider == "balance":
-                    user_result = await session.execute(
-                        select(User).where(User.id == order.user_id).with_for_update()
-                    )
-                    user = user_result.scalar_one_or_none()
-                    if user:
-                        user.balance_usdt += order.price_usdt
-                        logger.info(f"Refunded {order.price_usdt} USDT to user {order.user_id} for failed order {order_id}")
-                else:
-                    user_result = await session.execute(
-                        select(User).where(User.id == order.user_id)
-                    )
-                    user = user_result.scalar_one_or_none()
-
-                await session.commit()
-
-                # Подтверждаем обработку в Redis (удаляем из processing set)
-                if isinstance(self._queue, RedisQueue):
-                    await self._queue.ack(order_id)
+                error_code = (
+                    result.error_type.value
+                    if result.error_type
+                    else PaymentErrorType.UNKNOWN_ERROR.value
+                )
+                await self._fail_order(order_id, error_code, error_msg)
 
                 logger.error(f"Order {order_id} failed: {error_msg}")
-
-                # Логируем в Telegram (и в ошибки, и в заказы)
-                await tg_logger.log_order_failed(
-                    order_id=order_id,
-                    user_id=order.user_id,
-                    username=user.username if user else None,
-                    reason=error_msg,
-                )
-                await tg_logger.log_order_error(
-                    order_id=order_id,
-                    error_message=error_msg,
-                    user_id=order.user_id,
-                    username=user.username if user else None,
-                )
-
-                if self._on_order_failed:
-                    try:
-                        order = await order_service.get_order(order_id)
-                        await self._on_order_failed(order, error_msg)
-                    except Exception as callback_err:
-                        logger.exception(f"Error in on_order_failed callback for order {order_id}: {callback_err}")
 
     async def _recover_stuck_orders(
         self,
@@ -973,17 +1165,28 @@ class OrderWorker:
         logger.info("Recovering stuck orders...")
 
         # 1. Восстановление из Redis processing set (если используется Redis)
+        queued_order_ids = await self._queue.get_queued_order_ids()
+        queued_order_ids.update(self._active_orders)
         if recover_redis_processing and isinstance(self._queue, RedisQueue):
             processing_items = await self._queue.get_processing_items()
             for item in processing_items:
                 logger.warning(f"Recovering order {item.order_id} from Redis processing set")
-                # Перемещаем обратно в очередь без увеличения retry_count
-                # (requeue увеличивает, поэтому вручную)
-                await self._queue.ack(item.order_id)
-                await self._queue.enqueue(item.order_id, max_retries=item.max_retries)
+                async with async_session_factory() as session:
+                    service = OrderService(session)
+                    await service.return_to_pending(
+                        item.order_id,
+                        error_code="worker_restarted",
+                        error_message="Order processing was interrupted by worker restart",
+                        next_retry_at=datetime.utcnow(),
+                    )
+                    await session.commit()
+                await self._queue.requeue(item, count_retry=False)
+                queued_order_ids.add(item.order_id)
 
             if processing_items:
                 logger.info(f"Recovered {len(processing_items)} orders from Redis processing set")
+
+            queued_order_ids.update(await self._queue.get_queued_order_ids())
 
         # 2. Восстановление из БД (заказы в статусе PROCESSING)
         async with async_session_factory() as session:
@@ -992,8 +1195,18 @@ class OrderWorker:
 
             for order in stuck_orders:
                 logger.warning(f"Recovering stuck order {order.id} from DB (was PROCESSING)")
-                await order_service.return_to_pending(order.id)
-                await self._queue.enqueue(order.id)
+                await order_service.return_to_pending(
+                    order.id,
+                    error_code="stuck_processing",
+                    error_message="Recovered after processing timeout",
+                    next_retry_at=datetime.utcnow(),
+                )
+                if order.id not in queued_order_ids:
+                    await self._queue.enqueue(
+                        order.id,
+                        retry_count=max(0, order.retry_count),
+                    )
+                    queued_order_ids.add(order.id)
 
             await session.commit()
 
@@ -1009,10 +1222,18 @@ class OrderWorker:
             order_service = OrderService(session)
             pending_orders = await order_service.get_pending_orders(limit=100)
 
+            queued_order_ids.update(await self._queue.get_queued_order_ids())
+
             recovered_pending = 0
             for order in pending_orders:
+                if order.id in queued_order_ids:
+                    continue
                 logger.warning(f"Recovering pending order {order.id} (was never queued)")
-                await self._queue.enqueue(order.id)
+                await self._queue.enqueue(
+                    order.id,
+                    retry_count=max(0, order.retry_count),
+                )
+                queued_order_ids.add(order.id)
                 recovered_pending += 1
 
             if recovered_pending > 0:
@@ -1036,7 +1257,12 @@ class OrderWorker:
             await session.commit()
 
         for order_id in recovered_order_ids:
-            await self._queue.enqueue(order_id)
+            async with async_session_factory() as session:
+                order = await OrderService(session).get_order(order_id)
+            await self._queue.enqueue(
+                order_id,
+                retry_count=max(0, order.retry_count if order else 0),
+            )
 
         if recovered_order_ids:
             logger.info(f"Recovered {len(recovered_order_ids)} retryable failed orders")

@@ -13,6 +13,7 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 
 from src.bot.keyboards.menu import MenuCallback
+from src.bot.callback_utils import safe_callback_answer
 from src.bot.keyboards.stars import (
     StarsCallback,
     get_amount_keyboard,
@@ -23,6 +24,7 @@ from src.bot.keyboards.stars import (
     get_payment_method_keyboard,
     get_recipient_keyboard,
     get_stars_menu_keyboard,
+    get_stars_lava_payment_keyboard,
     get_stars_platega_payment_keyboard,
     get_stars_payment_pending_keyboard,
     get_stars_ton_payment_keyboard,
@@ -34,7 +36,15 @@ from src.services.user_service import UserService
 from src.services.order_service import OrderService
 from src.services.fragment_account_service import FragmentAccountService
 from src.services.recipient_service import validate_stars_recipient
-from src.services.bot_settings_service import get_bot_settings, get_cryptobot_fee
+from src.services.bot_settings_service import get_bot_settings, get_cryptobot_fee, get_lava_settings
+from src.services.lava_service import (
+    LavaConfigError,
+    LavaCreatePendingError,
+    LavaError,
+    build_lava_payment_text,
+    create_lava_payment,
+    process_lava_payment,
+)
 from src.services.platega_service import (
     PlategaConfigError,
     PlategaError,
@@ -53,7 +63,12 @@ from src.services.ton_payment_service import (
     create_ton_payment_url,
     check_ton_payment,
 )
-from src.workers.order_worker import get_order_worker
+from src.services.rub_rate_service import (
+    format_usdt_with_rub,
+    get_display_usdt_rub_rate,
+)
+from src.services.order_notification_service import get_order_processing_notice
+from src.services.order_runtime_service import enqueue_order_reliably, log_created_order
 from src.bot.menu_media import edit_menu_message
 
 logger = logging.getLogger(__name__)
@@ -78,6 +93,37 @@ async def get_stars_settings() -> tuple[int, int, Decimal]:
         return DEFAULT_MIN_STARS, DEFAULT_MAX_STARS, DEFAULT_STAR_PRICE_USDT
 
 
+async def get_buy_amount_keyboard(
+    lang: str,
+    star_price: Decimal,
+    max_stars: int = 0,
+):
+    """Клавиатура покупки звёзд с RUB-ценами на пресетах."""
+    usdt_rub_rate, _source = await get_display_usdt_rub_rate()
+    return get_amount_keyboard(
+        lang,
+        max_stars=max_stars,
+        star_price=star_price,
+        usdt_rub_rate=usdt_rub_rate,
+    )
+
+
+async def get_stars_payment_methods_keyboard(lang: str):
+    """Build payment methods and hide Lava until it is enabled and configured."""
+    try:
+        settings = await get_lava_settings()
+        lava_enabled = settings["enabled"] and settings["configured"]
+        lava_fee = settings["fee_percent"]
+    except Exception:
+        lava_enabled = False
+        lava_fee = Decimal("3.4")
+    return get_payment_method_keyboard(
+        lang,
+        lava_enabled=lava_enabled,
+        lava_fee_percent=lava_fee,
+    )
+
+
 class BuyStarsStates(StatesGroup):
     """Состояния для покупки звёзд."""
 
@@ -88,6 +134,7 @@ class BuyStarsStates(StatesGroup):
     waiting_cryptobot_payment = State()
     waiting_ton_payment = State()
     waiting_platega_payment = State()
+    waiting_lava_payment = State()
 
 
 class WithdrawStarsStates(StatesGroup):
@@ -331,10 +378,10 @@ async def callback_recipient_self_buy(callback: CallbackQuery, state: FSMContext
             callback.message,
             text=(
                 f"{t('common.payment.title', lang)}\n\n"
-                f"{t('stars_section.payment.info', lang, username=recipient, amount=f'{amount:,}', price=f'{price_usdt:,.2f}')}"
+                f"{t('stars_section.payment.info', lang, username=recipient, amount=f'{amount:,}', price=await format_usdt_with_rub(price_usdt))}"
                 f"\n\n{t('common.payment.select', lang)}"
             ),
-            reply_markup=get_payment_method_keyboard(lang),
+            reply_markup=await get_stars_payment_methods_keyboard(lang),
         )
     else:
         await state.set_state(BuyStarsStates.waiting_amount)
@@ -357,10 +404,10 @@ async def callback_recipient_self_buy(callback: CallbackQuery, state: FSMContext
             text=(
                 f"{t('common.amount.title', lang)}\n\n"
                 f"{t('stars_section.amount.recipient_info', lang, username=user.username)}\n\n"
-                f"{t('stars_section.amount.info', lang, min=f'{min_stars:,}', max=f'{max_stars:,}', min_price=f'{min_price:.2f}', max_price=f'{max_price:.2f}', afford=f'{afford_stars:,}', balance=f'{user_balance:.2f}')}"
+                f"{t('stars_section.amount.info', lang, min=f'{min_stars:,}', max=f'{max_stars:,}', min_price=await format_usdt_with_rub(min_price), max_price=await format_usdt_with_rub(max_price), afford=f'{afford_stars:,}', balance=f'{user_balance:.2f}')}"
                 f"\n\n{t('stars_section.amount.select', lang)}"
             ),
-            reply_markup=get_amount_keyboard(lang, max_stars=afford_stars),
+            reply_markup=await get_buy_amount_keyboard(lang, star_price, max_stars=afford_stars),
         )
     await callback.answer()
 
@@ -439,10 +486,10 @@ async def message_recipient_username_buy(message: Message, state: FSMContext) ->
                 bot_message_id,
                 text=(
                     f"{t('common.payment.title', lang)}\n\n"
-                    f"{t('stars_section.payment.info', lang, username=username, amount=f'{amount:,}', price=f'{price_usdt:,.2f}')}"
+                    f"{t('stars_section.payment.info', lang, username=username, amount=f'{amount:,}', price=await format_usdt_with_rub(price_usdt))}"
                     f"\n\n{t('common.payment.select', lang)}"
                 ),
-                reply_markup=get_payment_method_keyboard(lang),
+                reply_markup=await get_stars_payment_methods_keyboard(lang),
             )
     else:
         await state.set_state(BuyStarsStates.waiting_amount)
@@ -471,10 +518,10 @@ async def message_recipient_username_buy(message: Message, state: FSMContext) ->
                 text=(
                     f"{t('common.amount.title', lang)}\n\n"
                     f"{t('stars_section.amount.recipient_info', lang, username=username)}\n\n"
-                    f"{t('stars_section.amount.info', lang, min=f'{min_stars:,}', max=f'{max_stars:,}', min_price=f'{min_price:.2f}', max_price=f'{max_price:.2f}', afford=f'{afford_stars:,}', balance=f'{user_balance:.2f}')}"
+                    f"{t('stars_section.amount.info', lang, min=f'{min_stars:,}', max=f'{max_stars:,}', min_price=await format_usdt_with_rub(min_price), max_price=await format_usdt_with_rub(max_price), afford=f'{afford_stars:,}', balance=f'{user_balance:.2f}')}"
                     f"\n\n{t('stars_section.amount.select', lang)}"
                 ),
-                reply_markup=get_amount_keyboard(lang, max_stars=afford_stars),
+                reply_markup=await get_buy_amount_keyboard(lang, star_price, max_stars=afford_stars),
             )
 
 
@@ -547,10 +594,10 @@ async def callback_amount_buy(callback: CallbackQuery, state: FSMContext) -> Non
         callback.message,
         text=(
             f"{t('common.payment.title', lang)}\n\n"
-            f"{t('stars_section.payment.info', lang, username=recipient, amount=f'{amount:,}', price=f'{price_usdt:,.2f}')}"
+            f"{t('stars_section.payment.info', lang, username=recipient, amount=f'{amount:,}', price=await format_usdt_with_rub(price_usdt))}"
             f"\n\n{t('common.payment.select', lang)}"
         ),
-        reply_markup=get_payment_method_keyboard(lang),
+        reply_markup=await get_stars_payment_methods_keyboard(lang),
     )
     await callback.answer()
 
@@ -586,10 +633,10 @@ async def message_amount_buy(message: Message, state: FSMContext) -> None:
                 text=(
                     f"{t('common.amount.title', lang)}\n\n"
                     f"{t('common.amount.enter_number', lang)}\n\n"
-                    f"{t('stars_section.amount.info', lang, min=f'{min_stars:,}', max=f'{max_stars:,}', min_price=f'{min_price:.2f}', max_price=f'{max_price:.2f}', afford='0', afford_price='0.00')}"
+                    f"{t('stars_section.amount.info', lang, min=f'{min_stars:,}', max=f'{max_stars:,}', min_price=await format_usdt_with_rub(min_price), max_price=await format_usdt_with_rub(max_price), afford='0', balance='0.00')}"
                     f"\n\n{t('stars_section.amount.select', lang)}"
                 ),
-                reply_markup=get_amount_keyboard(lang),
+                reply_markup=await get_buy_amount_keyboard(lang, star_price),
             )
         return
 
@@ -602,10 +649,10 @@ async def message_amount_buy(message: Message, state: FSMContext) -> None:
                 text=(
                     f"{t('common.amount.title', lang)}\n\n"
                     f"{t('common.amount.min_error', lang, min=min_stars)}\n\n"
-                    f"{t('stars_section.amount.info', lang, min=f'{min_stars:,}', max=f'{max_stars:,}', min_price=f'{min_price:.2f}', max_price=f'{max_price:.2f}', afford='0', afford_price='0.00')}"
+                    f"{t('stars_section.amount.info', lang, min=f'{min_stars:,}', max=f'{max_stars:,}', min_price=await format_usdt_with_rub(min_price), max_price=await format_usdt_with_rub(max_price), afford='0', balance='0.00')}"
                     f"\n\n{t('stars_section.amount.select', lang)}"
                 ),
-                reply_markup=get_amount_keyboard(lang),
+                reply_markup=await get_buy_amount_keyboard(lang, star_price),
             )
         return
 
@@ -618,10 +665,10 @@ async def message_amount_buy(message: Message, state: FSMContext) -> None:
                 text=(
                     f"{t('common.amount.title', lang)}\n\n"
                     f"{t('common.amount.max_error', lang, max=f'{max_stars:,}')}\n\n"
-                    f"{t('stars_section.amount.info', lang, min=f'{min_stars:,}', max=f'{max_stars:,}', min_price=f'{min_price:.2f}', max_price=f'{max_price:.2f}', afford='0', afford_price='0.00')}"
+                    f"{t('stars_section.amount.info', lang, min=f'{min_stars:,}', max=f'{max_stars:,}', min_price=await format_usdt_with_rub(min_price), max_price=await format_usdt_with_rub(max_price), afford='0', balance='0.00')}"
                     f"\n\n{t('stars_section.amount.select', lang)}"
                 ),
-                reply_markup=get_amount_keyboard(lang),
+                reply_markup=await get_buy_amount_keyboard(lang, star_price),
             )
         return
 
@@ -638,10 +685,10 @@ async def message_amount_buy(message: Message, state: FSMContext) -> None:
             bot_message_id,
             text=(
                 f"{t('common.payment.title', lang)}\n\n"
-                f"{t('stars_section.payment.info', lang, username=recipient, amount=f'{amount:,}', price=f'{price_usdt:,.2f}')}"
+                f"{t('stars_section.payment.info', lang, username=recipient, amount=f'{amount:,}', price=await format_usdt_with_rub(price_usdt))}"
                 f"\n\n{t('common.payment.select', lang)}"
             ),
-            reply_markup=get_payment_method_keyboard(lang),
+            reply_markup=await get_stars_payment_methods_keyboard(lang),
         )
 
 
@@ -677,10 +724,10 @@ async def callback_back_to_amount(callback: CallbackQuery, state: FSMContext) ->
             text=(
                 f"{t('common.amount.title', lang)}\n\n"
                 f"{t('stars_section.amount.recipient_info', lang, username=recipient_username)}\n\n"
-                f"{t('stars_section.amount.info', lang, min=f'{min_stars:,}', max=f'{max_stars:,}', min_price=f'{min_price:.2f}', max_price=f'{max_price:.2f}', afford=f'{afford_stars:,}', balance=f'{user_balance:.2f}')}"
+                f"{t('stars_section.amount.info', lang, min=f'{min_stars:,}', max=f'{max_stars:,}', min_price=await format_usdt_with_rub(min_price), max_price=await format_usdt_with_rub(max_price), afford=f'{afford_stars:,}', balance=f'{user_balance:.2f}')}"
                 f"\n\n{t('stars_section.amount.select', lang)}"
             ),
-            reply_markup=get_amount_keyboard(lang, max_stars=afford_stars),
+            reply_markup=await get_buy_amount_keyboard(lang, star_price, max_stars=afford_stars),
         )
     else:
         await state.set_state(WithdrawStarsStates.waiting_amount)
@@ -715,10 +762,10 @@ async def callback_back_to_payment(callback: CallbackQuery, state: FSMContext) -
         callback.message,
         text=(
             f"{t('common.payment.title', lang)}\n\n"
-            f"{t('stars_section.payment.info', lang, username=recipient_username, amount=f'{amount:,}', price=f'{price_usdt:,.2f}')}"
+            f"{t('stars_section.payment.info', lang, username=recipient_username, amount=f'{amount:,}', price=await format_usdt_with_rub(price_usdt))}"
             f"\n\n{t('common.payment.select', lang)}"
         ),
-        reply_markup=get_payment_method_keyboard(lang),
+        reply_markup=await get_stars_payment_methods_keyboard(lang),
     )
     await callback.answer()
 
@@ -752,7 +799,7 @@ async def callback_pay_balance(callback: CallbackQuery, state: FSMContext) -> No
         callback.message,
         text=(
             f"{t('common.balance_payment.title', lang)}\n\n"
-            f"{t('common.balance_payment.stars_info', lang, recipient=recipient_username, amount=f'{amount:,}', price=f'{price_usdt:,.2f}')}"
+            f"{t('common.balance_payment.stars_info', lang, recipient=recipient_username, amount=f'{amount:,}', price=await format_usdt_with_rub(price_usdt))}"
             f"\n\n{t('common.balance_payment.confirm_text', lang)}"
         ),
         reply_markup=get_balance_confirm_keyboard(lang),
@@ -838,18 +885,10 @@ async def callback_confirm_balance(callback: CallbackQuery, state: FSMContext) -
 
         await session.commit()
 
-        # Добавляем заказ в очередь на обработку
-        worker = get_order_worker()
-        if worker:
-            await worker.enqueue_order(order.id)
-            logger.info(f"Order {order.id} enqueued for user {user.id}")
-        else:
-            logger.warning(f"OrderWorker not available, order {order.id} will be recovered on restart")
-
         order_text = (
             f"{t('common.order.created_title', lang, order_key=order.order_key)}\n\n"
-            f"{t('common.balance_payment.stars_info', lang, recipient=recipient_username, amount=f'{amount:,}', price=f'{price_usdt:,.2f}')}\n"
-            f"{t('common.order.processing', lang)}"
+            f"{t('common.balance_payment.stars_info', lang, recipient=recipient_username, amount=f'{amount:,}', price=await format_usdt_with_rub(price_usdt))}\n"
+            f"{await get_order_processing_notice(lang)}"
         )
         msg = None
         try:
@@ -865,6 +904,8 @@ async def callback_confirm_balance(callback: CallbackQuery, state: FSMContext) -
         if msg:
             order.message_id = msg.message_id
             await session.commit()
+        await enqueue_order_reliably(order.id)
+        await log_created_order(order, user.username)
 
     await state.clear()
     await callback.answer()
@@ -890,7 +931,7 @@ async def callback_pay_cryptobot(callback: CallbackQuery, state: FSMContext) -> 
         callback.message,
         text=(
             f"{t('common.cryptobot_payment.title', lang)}\n\n"
-            f"{t('common.cryptobot_payment.stars_info', lang, recipient=recipient_username, amount=f'{amount:,}', price=f'{amount_with_fee:,.2f}')}"
+            f"{t('common.cryptobot_payment.stars_info', lang, recipient=recipient_username, amount=f'{amount:,}', price=await format_usdt_with_rub(amount_with_fee))}"
             f"\n\n{t('common.cryptobot_payment.creating', lang)}"
         ),
     )
@@ -915,7 +956,7 @@ async def callback_pay_cryptobot(callback: CallbackQuery, state: FSMContext) -> 
             callback.message,
             text=(
                 f"{t('common.cryptobot_payment.title', lang)}\n\n"
-                f"{t('common.cryptobot_payment.stars_info', lang, recipient=recipient_username, amount=f'{amount:,}', price=f'{amount_with_fee:,.2f}')}"
+                f"{t('common.cryptobot_payment.stars_info', lang, recipient=recipient_username, amount=f'{amount:,}', price=await format_usdt_with_rub(amount_with_fee))}"
                 f"\n\n{t('common.cryptobot_payment.instructions', lang)}"
             ),
             reply_markup=get_stars_payment_pending_keyboard(invoice.bot_invoice_url, lang),
@@ -994,7 +1035,7 @@ async def callback_pay_ton(callback: CallbackQuery, state: FSMContext) -> None:
         callback.message,
         text=(
             f"{t('common.ton_payment.title', lang)}\n\n"
-            f"{t('common.ton_payment.stars_info', lang, recipient=recipient_username, amount=f'{amount:,}', ton_amount=f'{amount_ton:,.4f}', usdt_amount=f'{price_usdt:,.2f}')}"
+            f"{t('common.ton_payment.stars_info', lang, recipient=recipient_username, amount=f'{amount:,}', ton_amount=f'{amount_ton:,.4f}', usdt_amount=await format_usdt_with_rub(price_usdt))}"
             f"\n\n{t('common.ton_payment.instructions', lang)}"
             f"\n{t('common.ton_payment.warning', lang)}"
         ),
@@ -1026,7 +1067,7 @@ async def _create_platega_payment(callback: CallbackQuery, state: FSMContext) ->
         callback.message,
         text=(
             "🏦 <b>Оплата по СБП</b>\n\n"
-            f"{t('stars_section.payment.info', lang, username=recipient_username, amount=f'{amount:,}', price=f'{price_usdt:,.2f}')}"
+            f"{t('stars_section.payment.info', lang, username=recipient_username, amount=f'{amount:,}', price=await format_usdt_with_rub(price_usdt))}"
             "\n\nСоздаем платеж..."
         ),
     )
@@ -1079,6 +1120,88 @@ async def _create_platega_payment(callback: CallbackQuery, state: FSMContext) ->
         )
 
     await callback.answer()
+
+
+@router.callback_query(F.data == StarsCallback.PAY_LAVA, BuyStarsStates.waiting_payment)
+async def callback_pay_lava(callback: CallbackQuery, state: FSMContext) -> None:
+    """Create a Lava SBP invoice for a Stars purchase."""
+    await safe_callback_answer(callback)
+    data = await state.get_data()
+    amount = int(data.get("amount", 0))
+    recipient_username = data.get("recipient_username")
+    lang = data.get("lang", "ru")
+    star_price = Decimal(data.get("star_price", str(DEFAULT_STAR_PRICE_USDT)))
+    price_usdt = amount * star_price
+    item_line = t(
+        "common.lava_payment.stars_item",
+        lang,
+        recipient=recipient_username,
+        quantity=f"{amount:,}",
+    )
+
+    await safe_edit_message(
+        callback.message,
+        text=t("common.lava_payment.creating", lang, item_line=item_line),
+    )
+
+    try:
+        bot_info = await callback.bot.get_me()
+        return_url = f"https://t.me/{bot_info.username}?start=lava" if bot_info.username else "https://t.me"
+        created = await create_lava_payment(
+            user_id=callback.from_user.id,
+            operation_type="stars",
+            amount_usdt=price_usdt,
+            description=f"Stars purchase: {amount} stars",
+            metadata={
+                "recipient_username": recipient_username,
+                "quantity": amount,
+            },
+            return_url=return_url,
+            message_id=callback.message.message_id,
+        )
+        await state.update_data(lava_payment_id=created.payment.id)
+        await state.set_state(BuyStarsStates.waiting_lava_payment)
+        await safe_edit_message(
+            callback.message,
+            text=build_lava_payment_text(
+                lang=lang,
+                item_line=item_line,
+                amount_usdt=created.amount_to_pay_usdt,
+                base_amount_rub=created.base_amount_rub,
+                amount_rub=created.amount_with_fee_rub,
+                fee_percent=created.fee_percent,
+                ttl_minutes=created.ttl_minutes,
+            ),
+            reply_markup=get_stars_lava_payment_keyboard(created.pay_url, lang),
+        )
+    except LavaCreatePendingError as error:
+        await state.update_data(lava_payment_id=error.payment_id)
+        await state.set_state(BuyStarsStates.waiting_lava_payment)
+        await safe_edit_message(
+            callback.message,
+            text=t("common.lava_payment.creation_uncertain", lang),
+            reply_markup=get_stars_lava_payment_keyboard(None, lang),
+        )
+    except LavaConfigError:
+        await safe_edit_message(
+            callback.message,
+            text=t("common.lava_payment.unavailable", lang),
+            reply_markup=get_payment_error_keyboard(lang),
+        )
+    except LavaError as error:
+        logger.error("Failed to create Lava Stars payment: %s", error)
+        await safe_edit_message(
+            callback.message,
+            text=t("common.lava_payment.create_error", lang),
+            reply_markup=get_payment_error_keyboard(lang),
+        )
+    except Exception:
+        logger.exception("Unexpected error while creating Lava Stars payment")
+        await safe_edit_message(
+            callback.message,
+            text=t("common.lava_payment.create_error", lang),
+            reply_markup=get_payment_error_keyboard(lang),
+        )
 
 
 @router.callback_query(F.data == StarsCallback.CHECK_PAYMENT, BuyStarsStates.waiting_cryptobot_payment)
@@ -1145,20 +1268,14 @@ async def callback_check_cryptobot_payment(callback: CallbackQuery, state: FSMCo
                     session.add(transaction)
                     await session.commit()
 
-                    # Добавляем в очередь
-                    worker = get_order_worker()
-                    if worker:
-                        await worker.enqueue_order(order.id)
-                        logger.info(f"Stars order {order.id} enqueued (CryptoBot)")
-
                     try:
                         msg = await callback.message.edit_text(
                             text=(
                                 f"{t('common.order.created_title', lang, order_key=order.order_key)}\n\n"
                                 f"<blockquote>{t('common.order.recipient', lang, username=recipient_username)}\n"
                                 f"{t('common.order.quantity_stars', lang, amount=f'{amount:,}')}\n"
-                                f"{t('common.order.price', lang, price=f'{price_usdt:,.2f}')}</blockquote>\n\n"
-                                f"{t('common.order.processing', lang)}"
+                                f"{t('common.order.price', lang, price=await format_usdt_with_rub(price_usdt))}</blockquote>\n\n"
+                                f"{await get_order_processing_notice(lang)}"
                             ),
                             parse_mode="HTML",
                         )
@@ -1166,13 +1283,36 @@ async def callback_check_cryptobot_payment(callback: CallbackQuery, state: FSMCo
                         order.message_id = msg.message_id
                         await session.commit()
                     except Exception as e:
-                        logger.debug(f"Failed to edit message: {e}")
+                        logger.warning(f"Failed to edit paid order message: {e}")
+                        msg = await callback.message.answer(
+                            text=(
+                                f"{t('common.order.created_title', lang, order_key=order.order_key)}\n\n"
+                                f"<blockquote>{t('common.order.recipient', lang, username=recipient_username)}\n"
+                                f"{t('common.order.quantity_stars', lang, amount=f'{amount:,}')}\n"
+                                f"{t('common.order.price', lang, price=await format_usdt_with_rub(price_usdt))}</blockquote>\n\n"
+                                f"{await get_order_processing_notice(lang)}"
+                            ),
+                            parse_mode="HTML",
+                        )
+                        order.message_id = msg.message_id
+                        await session.commit()
+                    await enqueue_order_reliably(order.id)
+                    await log_created_order(
+                        order,
+                        db_user.username,
+                        paid_amount_usdt=Decimal(data.get("amount_with_fee", str(price_usdt))),
+                    )
                 else:
                     await callback.answer(t("common.payment_errors.order_exists", lang), show_alert=True)
+                    await state.clear()
+                    return
             else:
                 await callback.answer(t("common.payment_errors.user_not_found", lang), show_alert=True)
+                await state.clear()
+                return
 
         await state.clear()
+        await safe_callback_answer(callback)
 
     elif invoice.status == "expired":
         await safe_edit_message(
@@ -1184,6 +1324,7 @@ async def callback_check_cryptobot_payment(callback: CallbackQuery, state: FSMCo
             reply_markup=get_back_to_stars_keyboard(lang),
         )
         await state.clear()
+        await safe_callback_answer(callback)
 
     else:
         await callback.answer(t("common.payment_errors.not_received", lang), show_alert=True)
@@ -1270,20 +1411,14 @@ async def callback_check_ton_payment(callback: CallbackQuery, state: FSMContext)
                     session.add(transaction)
                     await session.commit()
 
-                    # Добавляем в очередь
-                    worker = get_order_worker()
-                    if worker:
-                        await worker.enqueue_order(order.id)
-                        logger.info(f"Stars order {order.id} enqueued (TON)")
-
                     try:
                         msg = await callback.message.edit_text(
                             text=(
                                 f"{t('common.order.created_title', lang, order_key=order.order_key)}\n\n"
                                 f"<blockquote>{t('common.order.recipient', lang, username=recipient_username)}\n"
                                 f"{t('common.order.quantity_stars', lang, amount=f'{amount:,}')}\n"
-                                f"{t('common.order.price', lang, price=f'{price_usdt:,.2f}')}</blockquote>\n\n"
-                                f"{t('common.order.processing', lang)}"
+                                f"{t('common.order.price', lang, price=await format_usdt_with_rub(price_usdt))}</blockquote>\n\n"
+                                f"{await get_order_processing_notice(lang)}"
                             ),
                             parse_mode="HTML",
                         )
@@ -1291,13 +1426,36 @@ async def callback_check_ton_payment(callback: CallbackQuery, state: FSMContext)
                         order.message_id = msg.message_id
                         await session.commit()
                     except Exception as e:
-                        logger.debug(f"Failed to edit message: {e}")
+                        logger.warning(f"Failed to edit paid order message: {e}")
+                        msg = await callback.message.answer(
+                            text=(
+                                f"{t('common.order.created_title', lang, order_key=order.order_key)}\n\n"
+                                f"<blockquote>{t('common.order.recipient', lang, username=recipient_username)}\n"
+                                f"{t('common.order.quantity_stars', lang, amount=f'{amount:,}')}\n"
+                                f"{t('common.order.price', lang, price=await format_usdt_with_rub(price_usdt))}</blockquote>\n\n"
+                                f"{await get_order_processing_notice(lang)}"
+                            ),
+                            parse_mode="HTML",
+                        )
+                        order.message_id = msg.message_id
+                        await session.commit()
+                    await enqueue_order_reliably(order.id)
+                    await log_created_order(
+                        order,
+                        db_user.username,
+                        provider_amount=f"{payment['amount_ton']:,.4f} TON",
+                    )
                 else:
                     await callback.answer(t("common.payment_errors.order_exists", lang), show_alert=True)
+                    await state.clear()
+                    return
             else:
                 await callback.answer(t("common.payment_errors.user_not_found", lang), show_alert=True)
+                await state.clear()
+                return
 
         await state.clear()
+        await safe_callback_answer(callback)
     else:
         await callback.answer(t("common.payment_errors.not_received", lang), show_alert=True)
 
@@ -1326,6 +1484,40 @@ async def callback_check_platega_payment(callback: CallbackQuery, state: FSMCont
     await callback.answer(result.message or t("common.payment_errors.invoice_check_error", lang), show_alert=True)
 
 
+@router.callback_query(F.data == StarsCallback.CHECK_LAVA_PAYMENT, BuyStarsStates.waiting_lava_payment)
+async def callback_check_lava_payment(callback: CallbackQuery, state: FSMContext) -> None:
+    """Manually check a Lava Stars payment."""
+    data = await state.get_data()
+    lang = data.get("lang", "ru")
+    payment_id = data.get("lava_payment_id")
+    if not payment_id:
+        await callback.answer(t("common.payment_errors.payment_not_found", lang), show_alert=True)
+        return
+
+    try:
+        result = await process_lava_payment(
+            int(payment_id), bot=callback.bot, force_check=True
+        )
+    except Exception:
+        logger.exception("Unexpected error while checking Lava Stars payment %s", payment_id)
+        await callback.answer(
+            t("common.payment_errors.invoice_check_error", lang),
+            show_alert=True,
+        )
+        return
+    if result.status == "pending":
+        await callback.answer(t("common.payment_errors.not_received", lang), show_alert=True)
+        return
+    if result.final:
+        await state.clear()
+        await safe_callback_answer(callback)
+        return
+    await callback.answer(
+        result.message or t("common.payment_errors.invoice_check_error", lang),
+        show_alert=True,
+    )
+
+
 @router.callback_query(F.data == StarsCallback.CANCEL_PAYMENT, BuyStarsStates.waiting_platega_payment)
 async def callback_cancel_platega_payment(callback: CallbackQuery, state: FSMContext) -> None:
     """Отмена ожидания оплаты СБП для Stars."""
@@ -1341,6 +1533,23 @@ async def callback_cancel_platega_payment(callback: CallbackQuery, state: FSMCon
         reply_markup=get_back_to_stars_keyboard(lang),
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == StarsCallback.CANCEL_PAYMENT, BuyStarsStates.waiting_lava_payment)
+async def callback_cancel_lava_payment(callback: CallbackQuery, state: FSMContext) -> None:
+    """Stop showing the Lava payment flow; the poller still protects paid invoices."""
+    data = await state.get_data()
+    lang = data.get("lang", "ru")
+    await state.clear()
+    await safe_edit_message(
+        callback.message,
+        text=(
+            f"{t('common.payment_status.cancelled_title', lang)}\n\n"
+            f"{t('common.payment_errors.cancelled', lang)}"
+        ),
+        reply_markup=get_back_to_stars_keyboard(lang),
+    )
+    await safe_callback_answer(callback)
 
 
 @router.callback_query(F.data == StarsCallback.CANCEL_PAYMENT, BuyStarsStates.waiting_cryptobot_payment)
@@ -1765,21 +1974,13 @@ async def callback_confirm_withdraw(callback: CallbackQuery, state: FSMContext) 
         sender.balance_stars -= Decimal(amount)
         await session.commit()
 
-        # Добавляем заказ в очередь на обработку
-        worker = get_order_worker()
-        if worker:
-            await worker.enqueue_order(order.id)
-            logger.info(f"Order {order.id} enqueued for user {user.id}")
-        else:
-            logger.warning(f"OrderWorker not available, order {order.id} will be recovered on restart")
-
         try:
             msg = await callback.message.edit_text(
                 text=(
                     f"{t('common.order.created_title', lang, order_key=order.order_key)}\n\n"
                     f"<blockquote>{t('common.order.recipient', lang, username=recipient_username)}\n"
                     f"{t('common.order.quantity_stars', lang, amount=f'{amount:,}')}</blockquote>\n\n"
-                    f"{t('common.order.processing', lang)}"
+                    f"{await get_order_processing_notice(lang)}"
                 ),
                 parse_mode="HTML",
             )
@@ -1787,7 +1988,20 @@ async def callback_confirm_withdraw(callback: CallbackQuery, state: FSMContext) 
             order.message_id = msg.message_id
             await session.commit()
         except Exception as e:
-            logger.debug(f"Failed to edit message: {e}")
+            logger.warning(f"Failed to edit order message: {e}")
+            msg = await callback.message.answer(
+                text=(
+                    f"{t('common.order.created_title', lang, order_key=order.order_key)}\n\n"
+                    f"<blockquote>{t('common.order.recipient', lang, username=recipient_username)}\n"
+                    f"{t('common.order.quantity_stars', lang, amount=f'{amount:,}')}</blockquote>\n\n"
+                    f"{await get_order_processing_notice(lang)}"
+                ),
+                parse_mode="HTML",
+            )
+            order.message_id = msg.message_id
+            await session.commit()
+        await enqueue_order_reliably(order.id)
+        await log_created_order(order, user.username)
 
     await state.clear()
     await callback.answer()

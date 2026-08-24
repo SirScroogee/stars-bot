@@ -1,10 +1,13 @@
 """
 Клавиатуры для раздела покупки звёзд.
 """
+from decimal import Decimal, ROUND_HALF_UP
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from src.bot.keyboards.menu import MenuCallback
 from src.locales import t
+from src.utils import format_decimal_compact
 
 
 class StarsCallback:
@@ -30,6 +33,7 @@ class StarsCallback:
     PAY_CRYPTOBOT = "stars:pay:cryptobot"
     PAY_TON = "stars:pay:ton"
     PAY_PLATEGA_SBP = "stars:pay:platega_sbp"
+    PAY_LAVA = "stars:pay:lava"
     CONFIRM_BALANCE = "stars:pay:balance:confirm"
     CANCEL_BALANCE = "stars:pay:balance:cancel"
 
@@ -37,6 +41,7 @@ class StarsCallback:
     CHECK_PAYMENT = "stars:check"
     CHECK_TON_PAYMENT = "stars:check:ton"
     CHECK_PLATEGA_PAYMENT = "stars:check:platega"
+    CHECK_LAVA_PAYMENT = "stars:check:lava"
     CANCEL_PAYMENT = "stars:cancel"
 
     # Подтверждение
@@ -95,14 +100,48 @@ def get_recipient_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
     )
 
 
-def get_amount_keyboard(lang: str = "ru", max_stars: int = 0) -> InlineKeyboardMarkup:
+def _amount_button_text(
+    amount: int,
+    star_price: Decimal | None,
+    usdt_rub_rate: Decimal | None,
+) -> str:
+    if star_price and usdt_rub_rate:
+        rub_amount = (Decimal(amount) * star_price * usdt_rub_rate).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+        if rub_amount > 0:
+            return f"{amount} ({rub_amount:,.2f} RUB)"
+    return f"{amount}⭐"
+
+
+def get_amount_keyboard(
+    lang: str = "ru",
+    max_stars: int = 0,
+    star_price: Decimal | None = None,
+    usdt_rub_rate: Decimal | None = None,
+) -> InlineKeyboardMarkup:
     """Клавиатура выбора количества звёзд."""
     keyboard = [
         [
-            InlineKeyboardButton(text="50⭐", callback_data=StarsCallback.AMOUNT_50),
-            InlineKeyboardButton(text="100⭐", callback_data=StarsCallback.AMOUNT_100),
-            InlineKeyboardButton(text="500⭐", callback_data=StarsCallback.AMOUNT_500),
-            InlineKeyboardButton(text="1000⭐", callback_data=StarsCallback.AMOUNT_1000),
+            InlineKeyboardButton(
+                text=_amount_button_text(50, star_price, usdt_rub_rate),
+                callback_data=StarsCallback.AMOUNT_50,
+            ),
+            InlineKeyboardButton(
+                text=_amount_button_text(100, star_price, usdt_rub_rate),
+                callback_data=StarsCallback.AMOUNT_100,
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text=_amount_button_text(500, star_price, usdt_rub_rate),
+                callback_data=StarsCallback.AMOUNT_500,
+            ),
+            InlineKeyboardButton(
+                text=_amount_button_text(1000, star_price, usdt_rub_rate),
+                callback_data=StarsCallback.AMOUNT_1000,
+            ),
         ],
     ]
 
@@ -125,23 +164,34 @@ def get_amount_keyboard(lang: str = "ru", max_stars: int = 0) -> InlineKeyboardM
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-def get_payment_method_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
+def get_payment_method_keyboard(
+    lang: str = "ru",
+    *,
+    lava_enabled: bool = False,
+    lava_fee_percent: Decimal = Decimal("3.4"),
+) -> InlineKeyboardMarkup:
     """Клавиатура выбора способа оплаты."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+    keyboard = []
+    if lava_enabled:
+        keyboard.append(
             [
                 InlineKeyboardButton(
-                    text=t("common.buttons.pay_balance", lang),
-                    callback_data=StarsCallback.PAY_BALANCE,
-                ),
-            ],
+                    text=t(
+                        "common.buttons.pay_lava",
+                        lang,
+                        fee=format_decimal_compact(lava_fee_percent),
+                    ),
+                    callback_data=StarsCallback.PAY_LAVA,
+                )
+            ]
+        )
+    keyboard.extend(
+        [
             [
                 InlineKeyboardButton(
                     text=t("common.buttons.pay_cryptobot", lang),
                     callback_data=StarsCallback.PAY_CRYPTOBOT,
                 ),
-            ],
-            [
                 InlineKeyboardButton(
                     text=t("common.buttons.pay_ton", lang),
                     callback_data=StarsCallback.PAY_TON,
@@ -149,18 +199,19 @@ def get_payment_method_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
-                    text="🏦 СБП (+8%)",
-                    callback_data=StarsCallback.PAY_PLATEGA_SBP,
-                ),
+                    text=t("common.buttons.pay_balance", lang),
+                    callback_data=StarsCallback.PAY_BALANCE,
+                )
             ],
             [
                 InlineKeyboardButton(
                     text=t("common.back", lang),
                     callback_data=StarsCallback.BACK_TO_AMOUNT,
-                ),
+                )
             ],
         ]
     )
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
 def get_balance_confirm_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
@@ -258,6 +309,37 @@ def get_stars_platega_payment_keyboard(pay_url: str, lang: str = "ru") -> Inline
                 ),
             ],
         ]
+    )
+
+
+def get_stars_lava_payment_keyboard(
+    pay_url: str | None,
+    lang: str = "ru",
+) -> InlineKeyboardMarkup:
+    """Клавиатура ожидания оплаты Lava для Stars."""
+    keyboard = []
+    if pay_url:
+        keyboard.append(
+            [InlineKeyboardButton(text=t("common.buttons.pay_lava_full", lang), url=pay_url)]
+        )
+    keyboard.extend(
+        [
+            [
+                InlineKeyboardButton(
+                    text=t("common.buttons.check_payment", lang),
+                    callback_data=StarsCallback.CHECK_LAVA_PAYMENT,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("common.cancel", lang),
+                    callback_data=StarsCallback.CANCEL_PAYMENT,
+                )
+            ],
+        ]
+    )
+    return InlineKeyboardMarkup(
+        inline_keyboard=keyboard
     )
 
 

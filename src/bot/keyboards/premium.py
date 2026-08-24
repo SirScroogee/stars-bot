@@ -1,10 +1,13 @@
 """
 Клавиатуры для раздела покупки Premium.
 """
+from decimal import Decimal, ROUND_HALF_UP
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from src.bot.keyboards.menu import MenuCallback
 from src.locales import t
+from src.utils import format_decimal_compact
 
 
 class PremiumCallback:
@@ -28,11 +31,13 @@ class PremiumCallback:
     PAY_CRYPTOBOT = "premium:pay:cryptobot"
     PAY_TON = "premium:pay:ton"
     PAY_PLATEGA_SBP = "premium:pay:platega_sbp"
+    PAY_LAVA = "premium:pay:lava"
 
     # Проверка оплаты
     CHECK_PAYMENT = "premium:check"
     CHECK_TON_PAYMENT = "premium:check:ton"
     CHECK_PLATEGA_PAYMENT = "premium:check:platega"
+    CHECK_LAVA_PAYMENT = "premium:check:lava"
     CANCEL_PAYMENT = "premium:cancel"
 
     # Подтверждение
@@ -91,25 +96,46 @@ def get_premium_recipient_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
     )
 
 
-def get_duration_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
+def _duration_button_text(
+    lang: str,
+    months: int,
+    prices: dict[int, Decimal] | None,
+    usdt_rub_rate: Decimal | None,
+) -> str:
+    base_text = t(f"premium_section.duration.months_{months}", lang)
+    if prices and usdt_rub_rate and months in prices:
+        rub_amount = (prices[months] * usdt_rub_rate).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+        if rub_amount > 0:
+            return f"{base_text} ({rub_amount:,.2f} RUB)"
+    return base_text
+
+
+def get_duration_keyboard(
+    lang: str = "ru",
+    prices: dict[int, Decimal] | None = None,
+    usdt_rub_rate: Decimal | None = None,
+) -> InlineKeyboardMarkup:
     """Клавиатура выбора срока Premium."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=t("premium_section.duration.months_3", lang),
+                    text=_duration_button_text(lang, 3, prices, usdt_rub_rate),
                     callback_data=PremiumCallback.DURATION_3,
                 ),
             ],
             [
                 InlineKeyboardButton(
-                    text=t("premium_section.duration.months_6", lang),
+                    text=_duration_button_text(lang, 6, prices, usdt_rub_rate),
                     callback_data=PremiumCallback.DURATION_6,
                 ),
             ],
             [
                 InlineKeyboardButton(
-                    text=t("premium_section.duration.months_12", lang),
+                    text=_duration_button_text(lang, 12, prices, usdt_rub_rate),
                     callback_data=PremiumCallback.DURATION_12,
                 ),
             ],
@@ -123,23 +149,34 @@ def get_duration_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
     )
 
 
-def get_premium_payment_method_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
+def get_premium_payment_method_keyboard(
+    lang: str = "ru",
+    *,
+    lava_enabled: bool = False,
+    lava_fee_percent: Decimal = Decimal("3.4"),
+) -> InlineKeyboardMarkup:
     """Клавиатура выбора способа оплаты."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+    keyboard = []
+    if lava_enabled:
+        keyboard.append(
             [
                 InlineKeyboardButton(
-                    text=t("common.buttons.pay_balance", lang),
-                    callback_data=PremiumCallback.PAY_BALANCE,
-                ),
-            ],
+                    text=t(
+                        "common.buttons.pay_lava",
+                        lang,
+                        fee=format_decimal_compact(lava_fee_percent),
+                    ),
+                    callback_data=PremiumCallback.PAY_LAVA,
+                )
+            ]
+        )
+    keyboard.extend(
+        [
             [
                 InlineKeyboardButton(
                     text=t("common.buttons.pay_cryptobot", lang),
                     callback_data=PremiumCallback.PAY_CRYPTOBOT,
                 ),
-            ],
-            [
                 InlineKeyboardButton(
                     text=t("common.buttons.pay_ton", lang),
                     callback_data=PremiumCallback.PAY_TON,
@@ -147,18 +184,19 @@ def get_premium_payment_method_keyboard(lang: str = "ru") -> InlineKeyboardMarku
             ],
             [
                 InlineKeyboardButton(
-                    text="🏦 СБП (+8%)",
-                    callback_data=PremiumCallback.PAY_PLATEGA_SBP,
-                ),
+                    text=t("common.buttons.pay_balance", lang),
+                    callback_data=PremiumCallback.PAY_BALANCE,
+                )
             ],
             [
                 InlineKeyboardButton(
                     text=t("common.back", lang),
                     callback_data=PremiumCallback.BACK_TO_DURATION,
-                ),
+                )
             ],
         ]
     )
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
 def get_premium_payment_pending_keyboard(pay_url: str, lang: str = "ru") -> InlineKeyboardMarkup:
@@ -236,6 +274,37 @@ def get_premium_platega_payment_keyboard(pay_url: str, lang: str = "ru") -> Inli
                 ),
             ],
         ]
+    )
+
+
+def get_premium_lava_payment_keyboard(
+    pay_url: str | None,
+    lang: str = "ru",
+) -> InlineKeyboardMarkup:
+    """Клавиатура ожидания оплаты Lava для Premium."""
+    keyboard = []
+    if pay_url:
+        keyboard.append(
+            [InlineKeyboardButton(text=t("common.buttons.pay_lava_full", lang), url=pay_url)]
+        )
+    keyboard.extend(
+        [
+            [
+                InlineKeyboardButton(
+                    text=t("common.buttons.check_payment", lang),
+                    callback_data=PremiumCallback.CHECK_LAVA_PAYMENT,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("common.cancel", lang),
+                    callback_data=PremiumCallback.CANCEL_PAYMENT,
+                )
+            ],
+        ]
+    )
+    return InlineKeyboardMarkup(
+        inline_keyboard=keyboard
     )
 
 

@@ -27,7 +27,7 @@ from src.bot.menu_media import answer_menu_message, edit_menu_message
 from src.db.models import Check, CheckActivation, User
 from src.db.session import async_session_factory
 from src.services.user_service import UserService
-from src.services.telegram_logger import tg_logger
+from src.services.user_registration_service import finalize_new_user_registration
 from src.services.bot_settings_service import get_bot_settings, get_min_stars, get_max_stars, get_premium_prices, get_star_price
 from src.locales import t, get_user_locale, pluralize_months
 
@@ -125,7 +125,7 @@ def _get_legal_notice_text(lang: str) -> str:
     if lang == "en":
         agreement_link = f'<a href="{USER_AGREEMENT_URL}">User Agreement</a>'
         return (
-            "<b>Before using Eva Star</b>\n\n"
+            "<b>Before using Dobro Star</b>\n\n"
             "By continuing to use the bot, placing orders, topping up the balance "
             "or receiving digital goods, you confirm that you have read and accept "
             f"the {agreement_link} and "
@@ -135,7 +135,7 @@ def _get_legal_notice_text(lang: str) -> str:
 
     agreement_link = f'<a href="{USER_AGREEMENT_URL}">Пользовательским соглашением</a>'
     return (
-        "<b>Перед использованием Eva Star</b>\n\n"
+        "<b>Перед использованием Dobro Star</b>\n\n"
         "Продолжая пользоваться ботом, оформляя заказы, пополняя баланс "
         "или получая цифровые товары, вы подтверждаете, что ознакомились "
         f"и соглашаетесь с {agreement_link} и "
@@ -185,7 +185,9 @@ def _safe_parse_int(value: str, max_value: int = 10_000_000) -> Optional[int]:
         return None
 
 
-def parse_start_params(param: str) -> tuple[str | None, int | None, int | None, str | None]:
+def parse_start_params(
+    param: str,
+) -> tuple[str | None, int | None, int | None, str | None, int | None]:
     """
     Парсит параметры /start команды.
 
@@ -198,22 +200,28 @@ def parse_start_params(param: str) -> tuple[str | None, int | None, int | None, 
     - check_CODE - код чека для активации
 
     Returns:
-        (referrer_code, buy_stars_amount, premium_months, check_code)
+        (referrer_code, buy_stars_amount, premium_months, check_code, giveaway_id)
     """
     referrer_code = None
     buy_amount = None
     premium_months = None
     check_code = None
+    giveaway_id = None
 
     if not param:
-        return None, None, None, None
+        return None, None, None, None, None
+
+    giveaway_match = re.fullmatch(r"giveaway_(\d+)", param)
+    if giveaway_match:
+        giveaway_id = _safe_parse_int(giveaway_match.group(1), max_value=2_147_483_647)
+        return None, None, None, None, giveaway_id
 
     # Проверяем формат check_CODE (чек для активации)
     if param.startswith("check_"):
         check_code = param[6:]  # Убираем префикс "check_"
         if check_code:  # Проверяем что код не пустой
-            return None, None, None, check_code
-        return None, None, None, None
+            return None, None, None, check_code, None
+        return None, None, None, None, None
 
     # Проверяем формат ref_CODE_buy_AMOUNT (Stars с рефералкой)
     buy_match = re.match(r"ref_(.+)_buy_(\d+)$", param)
@@ -221,8 +229,8 @@ def parse_start_params(param: str) -> tuple[str | None, int | None, int | None, 
         referrer_code = buy_match.group(1)
         buy_amount = _safe_parse_int(buy_match.group(2))
         if buy_amount:
-            return referrer_code, buy_amount, None, None
-        return None, None, None, None
+            return referrer_code, buy_amount, None, None, None
+        return None, None, None, None, None
 
     # Проверяем формат ref_CODE_premium_MONTHS (Premium с рефералкой)
     premium_match = re.match(r"ref_(.+)_premium_(\d+)$", param)
@@ -230,32 +238,32 @@ def parse_start_params(param: str) -> tuple[str | None, int | None, int | None, 
         referrer_code = premium_match.group(1)
         premium_months = _safe_parse_int(premium_match.group(2), max_value=120)
         if premium_months:
-            return referrer_code, None, premium_months, None
-        return None, None, None, None
+            return referrer_code, None, premium_months, None, None
+        return None, None, None, None, None
 
     # Проверяем формат buy_AMOUNT (Stars без рефералки, из inline)
     buy_simple = re.match(r"buy_(\d+)$", param)
     if buy_simple:
         buy_amount = _safe_parse_int(buy_simple.group(1))
         if buy_amount:
-            return None, buy_amount, None, None
-        return None, None, None, None
+            return None, buy_amount, None, None, None
+        return None, None, None, None, None
 
     # Проверяем формат premium_MONTHS (Premium без рефералки, из inline)
     premium_simple = re.match(r"premium_(\d+)$", param)
     if premium_simple:
         premium_months = _safe_parse_int(premium_simple.group(1), max_value=120)
         if premium_months:
-            return None, None, premium_months, None
-        return None, None, None, None
+            return None, None, premium_months, None, None
+        return None, None, None, None, None
 
     # Проверяем формат ref_CODE
     if param.startswith("ref_"):
         referrer_code = param[4:]  # Убираем префикс "ref_"
         if referrer_code:  # Проверяем что код не пустой
-            return referrer_code, None, None, None
+            return referrer_code, None, None, None, None
 
-    return None, None, None, None
+    return None, None, None, None, None
 
 
 @router.message(CommandStart(deep_link=True))
@@ -273,17 +281,25 @@ async def cmd_start_with_params(message: Message, state: FSMContext) -> None:
 
     if len(args) > 1:
         param = args[1]
-        referrer_code, buy_amount, premium_months, check_code = parse_start_params(param)
+        referrer_code, buy_amount, premium_months, check_code, giveaway_id = parse_start_params(param)
     else:
-        referrer_code, buy_amount, premium_months, check_code = None, None, None, None
+        referrer_code, buy_amount, premium_months, check_code, giveaway_id = None, None, None, None, None
 
-    await _process_start(message, state, referrer_code, buy_amount, premium_months, check_code)
+    await _process_start(message, state, referrer_code, buy_amount, premium_months, check_code, giveaway_id)
 
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
     """Обработка /start без параметров."""
-    await _process_start(message, state, referrer_code=None, buy_amount=None, premium_months=None, check_code=None)
+    await _process_start(
+        message,
+        state,
+        referrer_code=None,
+        buy_amount=None,
+        premium_months=None,
+        check_code=None,
+        giveaway_id=None,
+    )
 
 
 async def _process_start(
@@ -293,6 +309,7 @@ async def _process_start(
     buy_amount: int | None,
     premium_months: int | None,
     check_code: str | None,
+    giveaway_id: int | None,
 ) -> None:
     """Общая логика обработки /start."""
     user = message.from_user
@@ -324,7 +341,7 @@ async def _process_start(
 
         # Логируем событие
         if created:
-            await tg_logger.log_user_registered(
+            await finalize_new_user_registration(
                 user_id=user.id,
                 username=user.username,
                 language=lang,
@@ -335,6 +352,12 @@ async def _process_start(
         # Если есть check_code - активируем чек
         if check_code:
             await _activate_check(message, state, session, db_user, check_code, lang, is_new_user=created)
+            return
+
+        if giveaway_id:
+            from src.bot.handlers.giveaways import show_giveaway_from_start
+
+            await show_giveaway_from_start(message, giveaway_id, lang)
             return
 
         # Если есть buy_amount - переходим к покупке звёзд
@@ -363,6 +386,8 @@ async def _process_start(
         )
 
         bot_settings = await get_bot_settings()
+        from src.services.giveaway_service import GiveawayService
+        active_giveaways = await GiveawayService(session).has_active_giveaways()
 
         await answer_menu_message(
             message,
@@ -372,6 +397,7 @@ async def _process_start(
                 lang,
                 bot_settings.get("news_channel_url"),
                 is_admin=db_user.is_admin,
+                has_active_giveaways=active_giveaways,
             ),
             disable_web_page_preview=True,
         )
@@ -841,6 +867,8 @@ async def callback_back_to_menu(callback: CallbackQuery, state: FSMContext) -> N
 
         try:
             bot_settings = await get_bot_settings()
+            from src.services.giveaway_service import GiveawayService
+            active_giveaways = await GiveawayService(session).has_active_giveaways()
             await edit_menu_message(
                 callback,
                 "main",
@@ -849,6 +877,7 @@ async def callback_back_to_menu(callback: CallbackQuery, state: FSMContext) -> N
                     lang,
                     bot_settings.get("news_channel_url"),
                     is_admin=db_user.is_admin,
+                    has_active_giveaways=active_giveaways,
                 ),
                 disable_web_page_preview=True,
             )
@@ -856,6 +885,12 @@ async def callback_back_to_menu(callback: CallbackQuery, state: FSMContext) -> N
             logger.debug(f"Failed to edit menu message: {e}")
 
     await callback.answer()
+
+
+@router.callback_query(F.data == "subscription:check")
+async def callback_required_subscription_check(callback: CallbackQuery) -> None:
+    """Fallback handler so subscription middleware can process the check button."""
+    await callback.answer("Проверяю подписку...")
 
 
 @router.callback_query(F.data == "cancel_check_activation")

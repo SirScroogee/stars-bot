@@ -11,7 +11,7 @@ from decimal import Decimal
 from typing import Optional, Any
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
 
 logger = logging.getLogger(__name__)
 
@@ -132,30 +132,56 @@ class TelegramLogger:
         if not group_id or not topic_id:
             return False
 
-        try:
-            await self._bot.send_message(
-                chat_id=group_id,
-                message_thread_id=topic_id,
-                text=text,
-                parse_mode="HTML",
-            )
-            return True
-        except TelegramAPIError as e:
-            logger.error(f"TelegramLogger error: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"TelegramLogger unexpected error: {e}")
-            return False
+        for attempt in range(3):
+            try:
+                await self._bot.send_message(
+                    chat_id=group_id,
+                    message_thread_id=topic_id,
+                    text=text,
+                    parse_mode="HTML",
+                )
+                return True
+            except (TelegramBadRequest, TelegramForbiddenError) as e:
+                logger.error("TelegramLogger permanent error: %s", e)
+                return False
+            except TelegramAPIError as e:
+                if attempt == 2:
+                    logger.error("TelegramLogger error after retries: %s", e)
+                    return False
+                retry_after = float(getattr(e, "retry_after", 0) or (attempt + 1))
+                await asyncio.sleep(min(retry_after, 10.0))
+            except Exception as e:
+                if attempt == 2:
+                    logger.error("TelegramLogger unexpected error after retries: %s", e)
+                    return False
+                await asyncio.sleep(attempt + 1)
+        return False
 
     def _format_user(self, user_id: int, username: Optional[str] = None) -> str:
         """Форматировать информацию о пользователе."""
         if username:
-            return f"@{username} (<code>{user_id}</code>)"
+            return f"@{html.escape(username)} (<code>{user_id}</code>)"
         return f"<code>{user_id}</code>"
 
     def _now(self) -> str:
         """Текущее время (Москва, UTC+3)."""
         return datetime.now(MOSCOW_TZ).strftime("%d.%m.%Y %H:%M:%S")
+
+    async def _format_payment_amount(
+        self,
+        amount_usdt: Decimal,
+        amount_rub: Decimal | None = None,
+    ) -> str:
+        if amount_rub is not None:
+            return f"{amount_usdt:,.2f} USDT ({amount_rub:,.2f} RUB)"
+
+        try:
+            from src.services.rub_rate_service import format_usdt_with_rub
+
+            return await format_usdt_with_rub(amount_usdt)
+        except Exception as exc:
+            logger.warning("Could not add RUB conversion to payment log: %s", exc)
+            return f"{amount_usdt:,.2f} USDT"
 
     # ==================== ОШИБКИ ====================
 
@@ -195,6 +221,47 @@ class TelegramLogger:
 
         await self._send("errors", "order_error", text)
 
+    async def log_order_attention(
+        self,
+        order_id: int,
+        user_id: int,
+        username: Optional[str],
+        reason_code: str,
+        reason: str,
+        age_minutes: int,
+        *,
+        critical: bool = False,
+    ) -> bool:
+        """Notify the log topic and every admin about a delayed paid order."""
+        if reason_code == "insufficient_funds":
+            action = "Срочно пополните баланс рабочего кошелька Fragment."
+        elif reason_code == "no_fragment_account":
+            action = "Нет доступного Fragment-аккаунта. Проверьте аккаунты в админ-панели."
+        elif reason_code == "session_expired":
+            action = "Обновите сессию Fragment или активируйте другой аккаунт."
+        elif reason_code == "access_denied":
+            action = "Fragment отклонил операцию. Проверьте аккаунт и его сессию."
+        elif reason_code in {"processing_timeout", "worker_exception"}:
+            action = "Проверьте заказ вручную перед повторным запуском."
+        else:
+            action = "Проверьте состояние заказа и Fragment-сервиса."
+
+        title = "ORDER CRITICAL" if critical else "ORDER DELAYED"
+        text = (
+            f"<b>{title}</b> | {self._now()}\n\n"
+            f"<b>Заказ:</b> #{order_id}\n"
+            f"<b>Пользователь:</b> {self._format_user(user_id, username)}\n"
+            f"<b>Ожидает:</b> {max(0, age_minutes)} мин.\n"
+            f"<b>Код:</b> <code>{html.escape(reason_code or 'delayed')}</code>\n"
+            f"<b>Причина:</b> <code>{html.escape(reason or 'Заказ выполняется дольше ожидаемого')}</code>\n\n"
+            f"⚠️ {html.escape(action)}"
+        )
+
+        event_key = "order_critical" if critical else "order_delayed"
+        topic_delivered = await self._send("errors", event_key, text)
+        admin_delivered = await self._notify_admins(text)
+        return topic_delivered or admin_delivered
+
     async def log_fragment_session_expired(
         self,
         account_id: int,
@@ -214,10 +281,10 @@ class TelegramLogger:
         await self._send("errors", "fragment_session_expired", text)
         await self._notify_admins(text)
 
-    async def _notify_admins(self, text: str) -> None:
+    async def _notify_admins(self, text: str) -> bool:
         """Отправить важное уведомление всем админам из базы."""
         if not self._bot:
-            return
+            return False
 
         try:
             from sqlalchemy import select
@@ -233,8 +300,9 @@ class TelegramLogger:
                 admin_ids = [row[0] for row in result.fetchall()]
         except Exception as e:
             logger.error(f"Failed to load admins for notification: {e}")
-            return
+            return False
 
+        delivered = False
         for admin_id in admin_ids:
             try:
                 await self._bot.send_message(
@@ -242,10 +310,12 @@ class TelegramLogger:
                     text=text,
                     parse_mode="HTML",
                 )
+                delivered = True
             except TelegramAPIError as e:
                 logger.warning(f"Failed to notify admin {admin_id}: {e}")
             except Exception as e:
                 logger.warning(f"Unexpected notify error for admin {admin_id}: {e}")
+        return delivered
 
     # ==================== ОПЛАТЫ ====================
 
@@ -267,17 +337,42 @@ class TelegramLogger:
 
     async def log_payment_completed(
         self,
+        order_id: int,
         user_id: int,
         username: Optional[str],
-        amount: Decimal,
-        currency: str,
+        amount_usdt: Decimal,
         provider: str,
+        product_type: str,
+        quantity: int,
+        recipient: str,
+        amount_rub: Decimal | None = None,
+        provider_amount: str | None = None,
     ) -> None:
-        """Логировать успешную оплату."""
-        text = f"<b>PAYMENT SUCCESS</b> | {self._now()}\n\n"
+        """Log a confirmed monetary payment for an order."""
+        provider_names = {
+            "cryptobot": "CryptoBot",
+            "ton": "TON",
+            "platega": "СБП (Platega)",
+            "lava": "Lava / СБП",
+            "balance": "Внутренний баланс USDT",
+        }
+        amount_text = await self._format_payment_amount(amount_usdt, amount_rub)
+
+        if product_type == "stars":
+            purpose = f"Покупка {quantity:,} Telegram Stars"
+        else:
+            purpose = f"Покупка Telegram Premium на {quantity} мес."
+
+        text = "<b>УСПЕШНАЯ ОПЛАТА</b>\n\n"
+        text += f"<b>Время (МСК):</b> {self._now()}\n"
+        text += f"<b>Оплата:</b> {purpose}\n"
+        text += f"<b>Заказ:</b> #{order_id}\n"
         text += f"<b>Пользователь:</b> {self._format_user(user_id, username)}\n"
-        text += f"<b>Сумма:</b> {amount} {currency}\n"
-        text += f"<b>Провайдер:</b> {provider}"
+        text += f"<b>Получатель:</b> @{html.escape(recipient.lstrip('@'))}\n"
+        text += f"<b>Сумма:</b> {amount_text}\n"
+        if provider_amount:
+            text += f"<b>Сумма в валюте провайдера:</b> {html.escape(provider_amount)}\n"
+        text += f"<b>Способ оплаты:</b> {provider_names.get(provider, html.escape(provider))}"
 
         await self._send("payments", "payment_completed", text)
 
@@ -287,11 +382,24 @@ class TelegramLogger:
         username: Optional[str],
         amount: Decimal,
         currency: str,
+        provider: str | None = None,
+        amount_rub: Decimal | None = None,
+        provider_amount: str | None = None,
+        paid_amount_usdt: Decimal | None = None,
     ) -> None:
         """Логировать пополнение баланса."""
-        text = f"<b>DEPOSIT</b> | {self._now()}\n\n"
+        payment_amount = paid_amount_usdt if paid_amount_usdt is not None else amount
+        amount_text = await self._format_payment_amount(payment_amount, amount_rub)
+        text = "<b>УСПЕШНАЯ ОПЛАТА</b>\n\n"
+        text += f"<b>Время (МСК):</b> {self._now()}\n"
+        text += "<b>Оплата:</b> Пополнение внутреннего баланса\n"
         text += f"<b>Пользователь:</b> {self._format_user(user_id, username)}\n"
-        text += f"<b>Сумма:</b> +{amount} {currency}"
+        text += f"<b>Сумма:</b> {amount_text}\n"
+        if payment_amount != amount:
+            text += f"<b>Зачислено на баланс:</b> +{amount:,.2f} USDT\n"
+        if provider_amount:
+            text += f"<b>Сумма в валюте провайдера:</b> {html.escape(provider_amount)}\n"
+        text += f"<b>Способ оплаты:</b> {html.escape(provider or currency)}"
 
         await self._send("payments", "deposit", text)
 
@@ -352,7 +460,7 @@ class TelegramLogger:
         text = f"<b>ORDER FAILED</b> | {self._now()}\n\n"
         text += f"<b>Заказ:</b> #{order_id}\n"
         text += f"<b>Пользователь:</b> {self._format_user(user_id, username)}\n"
-        text += f"<b>Причина:</b> {reason}"
+        text += f"<b>Причина:</b> {html.escape(str(reason))}"
 
         await self._send("orders", "order_failed", text)
 
@@ -594,16 +702,16 @@ class TelegramLogger:
         username: Optional[str],
         language: str,
         referrer_code: Optional[str] = None,
-    ) -> None:
+    ) -> bool:
         """Логировать регистрацию пользователя."""
         text = f"<b>USER REGISTERED</b> | {self._now()}\n\n"
         text += f"<b>Пользователь:</b> {self._format_user(user_id, username)}\n"
-        text += f"<b>Язык:</b> {language}"
+        text += f"<b>Язык:</b> {html.escape(language)}"
 
         if referrer_code:
-            text += f"\n<b>Реф. код:</b> <code>{referrer_code}</code>"
+            text += f"\n<b>Реф. код:</b> <code>{html.escape(referrer_code)}</code>"
 
-        await self._send("users", "user_registered", text)
+        return await self._send("users", "user_registered", text)
 
     async def log_user_started(
         self,

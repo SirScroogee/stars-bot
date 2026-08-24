@@ -1,7 +1,7 @@
 """Links to legal documents shown to users."""
 
-PRIVACY_POLICY_URL = "https://telegra.ph/Politika-konfidencialnosti-04-01-26"
-USER_AGREEMENT_URL = "https://telegra.ph/Polzovatelskoe-soglashenie-04-01-19"
+PRIVACY_POLICY_URL = "https://telegra.ph/Politika-konfidencialnosti-07-16-68"
+USER_AGREEMENT_URL = "https://telegra.ph/Polzovatelskoe-soglashenie-Dobro-Star-07-30"
 
 
 def get_legal_links_text(lang: str) -> str:

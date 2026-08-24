@@ -7,6 +7,7 @@ import logging
 import re
 from datetime import datetime, timedelta, date
 from decimal import Decimal
+from uuid import UUID
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -51,17 +52,19 @@ from src.bot.keyboards.admin import (
     get_settings_payments_keyboard,
     get_settings_cryptobot_keyboard,
     get_settings_ton_keyboard,
+    get_settings_lava_keyboard,
     get_settings_platega_keyboard,
     get_settings_cost_keyboard,
     get_settings_referral_keyboard,
     get_settings_support_keyboard,
     get_settings_media_keyboard,
+    get_settings_subscription_keyboard,
     get_settings_cancel_keyboard,
 )
 from src.bot.keyboards.calendar import get_calendar_keyboard
 from src.db.models import (
     Order, Transaction, User, ReferralEarning,
-    Check, CheckActivation, PromoCode, PromoUse, BalanceLedger
+    Check, CheckActivation, PromoCode, PromoUse, BalanceLedger, BotChannel
 )
 from src.db.session import async_session_factory
 from src.services.user_service import UserService
@@ -76,6 +79,23 @@ logger = logging.getLogger(__name__)
 to_moscow = to_moscow_time
 
 router = Router(name="admin")
+
+
+async def _get_subscription_channels(session) -> list[BotChannel]:
+    result = await session.execute(
+        select(BotChannel)
+        .where(BotChannel.is_active == True)
+        .order_by(BotChannel.channel_title)
+    )
+    return list(result.scalars().all())
+
+
+async def _make_subscription_url(bot, channel: BotChannel) -> str:
+    invite_link = await bot.create_chat_invite_link(
+        chat_id=channel.channel_id,
+        name="Обязательная подписка",
+    )
+    return invite_link.invite_link
 
 
 class AdminStates(StatesGroup):
@@ -448,7 +468,14 @@ async def get_orders_stats(
     text += f"🕐 Ожидают: <b>{pending:,}</b></blockquote>\n\n"
 
     text += "<blockquote>💳 <b>Оплата</b>\n"
-    payment_names = {"balance": "💰 Баланс", "ton": "💎 TON", "usdt": "💵 USDT", "cryptobot": "🤖 CryptoBot"}
+    payment_names = {
+        "balance": "💰 Баланс",
+        "ton": "💎 TON",
+        "usdt": "💵 USDT",
+        "cryptobot": "🤖 CryptoBot",
+        "platega": "🏦 СБП / Platega",
+        "lava": "🌋 Lava / СБП",
+    }
     for i, (provider, cnt) in enumerate(payment_methods):
         name = payment_names.get(provider, provider)
         text += f"{name}: <b>{cnt:,}</b>\n"
@@ -950,7 +977,6 @@ async def get_tech_stats(
     """Техническая статистика."""
     import time
     import platform
-    import psutil
     from src.core.queue import get_order_queue
 
     if period == "custom" and date_from and date_to:
@@ -1021,13 +1047,15 @@ async def get_tech_stats(
 
     # Системная информация
     try:
+        import psutil
+
         process = psutil.Process()
         memory_mb = process.memory_info().rss / 1024 / 1024
         cpu_percent = process.cpu_percent()
         uptime_seconds = time.time() - process.create_time()
         uptime_hours = int(uptime_seconds // 3600)
         uptime_mins = int((uptime_seconds % 3600) // 60)
-    except Exception:
+    except (ImportError, OSError):
         memory_mb = 0
         cpu_percent = 0
         uptime_hours = 0
@@ -2639,13 +2667,21 @@ SETTING_NAMES = {
     "referral_percent_level3": "Реферал уровень 3 (%)",
     "payment_fee_cryptobot": "Комиссия CryptoBot (%)",
     "payment_fee_ton": "Комиссия TON (%)",
+    "payment_fee_platega": "Комиссия Platega (%)",
+    "payment_fee_lava": "Комиссия Lava (%)",
     "cryptobot_token": "Токен CryptoBot",
     "ton_wallet_address": "Адрес TON кошелька",
     "platega_merchant_id": "Platega MerchantId",
     "platega_secret": "Platega Secret",
-    "platega_poll_interval_seconds": "Автопроверка СБП (сек)",
+    "platega_poll_interval_seconds": "Автопроверка Platega (сек)",
+    "lava_shop_id": "Lava Shop ID",
+    "lava_secret_key": "Lava Secret Key",
+    "lava_additional_key": "Lava Additional Key",
+    "lava_poll_interval_seconds": "Автопроверка Lava (сек)",
     "support_username": "Username поддержки",
     "news_channel_url": "Ссылка на новостной канал",
+    "required_subscription_channel": "Канал обязательной подписки",
+    "required_subscription_url": "Ссылка обязательной подписки",
 }
 
 
@@ -2904,6 +2940,106 @@ async def callback_settings_support(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
+@router.callback_query(F.data == AdminCallback.SETTINGS_SUBSCRIPTION)
+async def callback_settings_subscription(callback: CallbackQuery) -> None:
+    """Настройки обязательной подписки."""
+    if not await _check_admin(callback):
+        return
+
+    async with async_session_factory() as session:
+        service = BotSettingsService(session)
+        settings = await service.get_settings()
+        channels = await _get_subscription_channels(session)
+
+    required_subscription_channel = settings.get("required_subscription_channel") or "не задан"
+    required_subscription_url = settings.get("required_subscription_url") or "не задана"
+
+    try:
+        bot_info = await callback.bot.get_me()
+        bot_username = bot_info.username
+    except Exception as e:
+        logger.error(f"Failed to get bot username for subscription settings: {e}")
+        bot_username = None
+
+    await callback.message.edit_text(
+        text=(
+            "🔒 <b>ОП — обязательная подписка</b>\n\n"
+            "<blockquote>"
+            f"Канал для проверки: <b>{required_subscription_channel}</b>\n"
+            f"Ссылка для кнопки: <b>{required_subscription_url}</b>"
+            "</blockquote>\n\n"
+            "Нажмите канал из списка, чтобы сделать его активным для ОП. "
+            "Бот должен быть админом канала, иначе Telegram не даст проверить подписку пользователя."
+        ),
+        reply_markup=get_settings_subscription_keyboard(settings, bot_username, channels),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:settings:subscription:select:"))
+async def callback_settings_subscription_select(callback: CallbackQuery) -> None:
+    """Выбрать канал обязательной подписки из каналов, где бот уже админ."""
+    if not await _check_admin(callback):
+        return
+
+    try:
+        channel_pk = int(callback.data.rsplit(":", 1)[-1])
+    except (TypeError, ValueError):
+        await callback.answer("Некорректный канал", show_alert=True)
+        return
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(BotChannel).where(
+                BotChannel.id == channel_pk,
+                BotChannel.is_active == True,
+            )
+        )
+        channel = result.scalar_one_or_none()
+        if not channel:
+            await callback.answer("Канал не найден или бот уже не админ", show_alert=True)
+            return
+
+        service = BotSettingsService(session, admin_id=callback.from_user.id)
+        settings = await service.get_settings()
+        old_channel = settings.get("required_subscription_channel", "")
+        old_url = str(settings.get("required_subscription_url") or "")
+        same_channel = str(old_channel) == str(channel.channel_id)
+        has_invite_url = "t.me/+" in old_url or "t.me/joinchat/" in old_url
+
+        if same_channel and has_invite_url:
+            subscription_url = old_url
+        else:
+            try:
+                subscription_url = await _make_subscription_url(callback.bot, channel)
+            except Exception as e:
+                logger.error(f"Failed to create subscription invite link for channel {channel.channel_id}: {e}")
+                await callback.answer(
+                    "Не удалось создать ссылку. Проверьте, что бот админ канала и может приглашать пользователей.",
+                    show_alert=True,
+                )
+                return
+
+        await service.set_setting(
+            "required_subscription_channel",
+            str(channel.channel_id),
+            old_value=old_channel,
+        )
+
+        await service.set_setting(
+            "required_subscription_url",
+            subscription_url,
+            old_value=old_url,
+        )
+
+        await session.commit()
+
+    invalidate_bot_settings_cache()
+    await callback.answer("Канал обязательной подписки выбран")
+    await callback_settings_subscription(callback)
+
+
 @router.callback_query(F.data == AdminCallback.SETTINGS_MEDIA)
 async def callback_settings_media(callback: CallbackQuery, state: FSMContext) -> None:
     """Настройки фото пользовательских меню."""
@@ -3063,6 +3199,11 @@ async def callback_settings_payments(callback: CallbackQuery) -> None:
 
     fee_cryptobot = format_percent(settings.get("payment_fee_cryptobot", "3"))
     fee_ton = format_percent(settings.get("payment_fee_ton", "0"))
+    fee_platega = format_percent(settings.get("payment_fee_platega", "8"))
+    fee_lava = format_percent(settings.get("payment_fee_lava", "3.4"))
+    lava_enabled = str(settings.get("lava_enabled", "false")).lower() in (
+        "true", "1", "yes", "on"
+    )
     token = settings.get("cryptobot_token", "")
     wallet = settings.get("ton_wallet_address", "")
 
@@ -3086,7 +3227,12 @@ async def callback_settings_payments(callback: CallbackQuery) -> None:
             f"📊 Комиссия: <b>{fee_cryptobot}%</b>\n\n"
             "<b>💎 TON</b>\n"
             f"📬 Кошелёк: <b>{wallet_display}</b>\n"
-            f"📊 Комиссия: <b>{fee_ton}%</b>"
+            f"📊 Комиссия: <b>{fee_ton}%</b>\n\n"
+            "<b>🏦 Platega</b>\n"
+            f"📊 Комиссия: <b>{fee_platega}%</b>\n\n"
+            "<b>🌋 Lava / СБП</b>\n"
+            f"Статус: <b>{'включена' if lava_enabled else 'выключена'}</b>\n"
+            f"📊 Комиссия: <b>{fee_lava}%</b>"
             "</blockquote>\n\n"
             "Выберите способ оплаты для настройки:"
         ),
@@ -3166,7 +3312,7 @@ async def callback_settings_ton(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == AdminCallback.SETTINGS_PAYMENT_PLATEGA)
 async def callback_settings_platega(callback: CallbackQuery) -> None:
-    """Настройки СБП Platega."""
+    """Настройки Platega."""
     if not await _check_admin(callback):
         return
 
@@ -3178,6 +3324,7 @@ async def callback_settings_platega(callback: CallbackQuery) -> None:
     merchant = settings.get("platega_merchant_id", "")
     secret = settings.get("platega_secret", "")
     poll = settings.get("platega_poll_interval_seconds", "5")
+    fee = format_percent(settings.get("payment_fee_platega", "8"))
 
     merchant_display = (merchant[:8] + "..." + merchant[-4:]) if len(merchant) > 14 else (merchant if merchant else "не установлен")
     secret_display = (secret[:8] + "..." + secret[-4:]) if len(secret) > 14 else (secret[:4] + "..." if secret else "не установлен")
@@ -3185,11 +3332,12 @@ async def callback_settings_platega(callback: CallbackQuery) -> None:
 
     await callback.message.edit_text(
         text=(
-            "🏦 <b>Настройки СБП</b>\n\n"
+            "🏦 <b>Настройки Platega</b>\n\n"
             "<blockquote>"
             f"Статус: <b>{status}</b>\n"
             f"MerchantId: <b>{merchant_display}</b>\n"
             f"Secret: <b>{secret_display}</b>\n"
+            f"Комиссия: <b>{fee}%</b>\n"
             f"Автопроверка: <b>{poll} сек.</b>\n"
             "Время платежа: <b>30 мин.</b>"
             "</blockquote>\n\n"
@@ -3203,7 +3351,7 @@ async def callback_settings_platega(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "admin:settings:platega:toggle")
 async def callback_settings_platega_toggle(callback: CallbackQuery) -> None:
-    """Быстро включить или выключить СБП."""
+    """Быстро включить или выключить Platega."""
     if not await _check_admin(callback):
         return
 
@@ -3216,6 +3364,89 @@ async def callback_settings_platega_toggle(callback: CallbackQuery) -> None:
 
     invalidate_bot_settings_cache()
     await callback_settings_platega(callback)
+
+
+def _mask_lava_shop_id(value: str) -> str:
+    if not value:
+        return "не установлен"
+    return f"{value[:8]}...{value[-4:]}" if len(value) > 14 else value
+
+
+def _mask_lava_key(value: str) -> str:
+    return "установлен" if value else "не установлен"
+
+
+async def _render_lava_settings(callback: CallbackQuery) -> None:
+    async with async_session_factory() as session:
+        service = BotSettingsService(session)
+        settings = await service.get_settings()
+
+    enabled = str(settings.get("lava_enabled", "false")).lower() in (
+        "true", "1", "yes", "on"
+    )
+    shop_id = settings.get("lava_shop_id", "") or ""
+    secret_key = settings.get("lava_secret_key", "") or ""
+    additional_key = settings.get("lava_additional_key", "") or ""
+    poll = settings.get("lava_poll_interval_seconds", "5")
+    fee = format_percent(settings.get("payment_fee_lava", "3.4"))
+    await callback.message.edit_text(
+        text=(
+            "🌋 <b>Настройки Lava / СБП</b>\n\n"
+            "<blockquote>"
+            f"Статус: <b>{'включена' if enabled else 'выключена'}</b>\n"
+            f"Shop ID: <b>{_mask_lava_shop_id(shop_id)}</b>\n"
+            f"Secret Key: <b>{_mask_lava_key(secret_key)}</b>\n"
+            f"Additional Key: <b>{_mask_lava_key(additional_key)}</b>\n"
+            f"Комиссия: <b>{fee}%</b>\n"
+            f"Автопроверка: <b>{poll} сек.</b>\n"
+            "Метод оплаты: <b>только СБП</b>\n"
+            "Время счёта: <b>30 мин.</b>"
+            "</blockquote>\n\n"
+            "Для включения заполните Shop ID и Secret Key."
+        ),
+        reply_markup=get_settings_lava_keyboard(enabled),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == AdminCallback.SETTINGS_PAYMENT_LAVA)
+async def callback_settings_lava(callback: CallbackQuery) -> None:
+    """Настройки Lava Business API."""
+    if not await _check_admin(callback):
+        return
+    await _render_lava_settings(callback)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:settings:lava:toggle")
+async def callback_settings_lava_toggle(callback: CallbackQuery) -> None:
+    """Включить Lava после заполнения обязательных ключей."""
+    if not await _check_admin(callback):
+        return
+
+    async with async_session_factory() as session:
+        service = BotSettingsService(session)
+        settings = await service.get_settings()
+    enabled = str(settings.get("lava_enabled", "false")).lower() in (
+        "true", "1", "yes", "on"
+    )
+
+    if not enabled:
+        if not settings.get("lava_shop_id") or not settings.get("lava_secret_key"):
+            await callback.answer("Сначала заполните Shop ID и Secret Key", show_alert=True)
+            return
+
+    async with async_session_factory() as session:
+        service = BotSettingsService(session, admin_id=callback.from_user.id)
+        await service.set_setting(
+            "lava_enabled",
+            "false" if enabled else "true",
+            old_value=settings.get("lava_enabled", "false"),
+        )
+        await session.commit()
+    invalidate_bot_settings_cache()
+    await _render_lava_settings(callback)
+    await callback.answer("Lava выключена" if enabled else "Lava включена")
 
 
 @router.callback_query(F.data.startswith("admin:settings:edit:"))
@@ -3247,10 +3478,20 @@ async def callback_settings_edit(callback: CallbackQuery, state: FSMContext) -> 
         section = "cryptobot"
     elif setting_key == "ton_wallet_address" or setting_key == "payment_fee_ton":
         section = "ton"
-    elif setting_key.startswith("platega_"):
+    elif setting_key.startswith("platega_") or setting_key == "payment_fee_platega":
         section = "platega"
-    elif setting_key in ("support_username", "news_channel_url"):
+    elif setting_key.startswith("lava_") or setting_key == "payment_fee_lava":
+        section = "lava"
+    elif setting_key in (
+        "support_username",
+        "news_channel_url",
+    ):
         section = "support"
+    elif setting_key in (
+        "required_subscription_channel",
+        "required_subscription_url",
+    ):
+        section = "subscription"
     else:
         section = "settings"
 
@@ -3352,17 +3593,57 @@ async def callback_settings_edit(callback: CallbackQuery, state: FSMContext) -> 
             )
         elif setting_key == "platega_poll_interval_seconds":
             current_display = f"{current_value or '5'} сек."
+        elif setting_key == "payment_fee_platega":
+            current_display = f"{format_percent(current_value or '8')}%"
         else:
             current_display = current_value or "не установлено"
         values_block = f"Текущее значение: <b>{current_display}</b>\n\n"
+    elif section == "lava":
+        if setting_key == "lava_shop_id":
+            current_display = _mask_lava_shop_id(str(current_value))
+        elif setting_key in ("lava_secret_key", "lava_additional_key"):
+            current_display = _mask_lava_key(str(current_value))
+        elif setting_key == "lava_poll_interval_seconds":
+            current_display = f"{current_value or '5'} сек."
+        elif setting_key == "payment_fee_lava":
+            current_display = f"{format_percent(current_value or '3.4')}%"
+        else:
+            current_display = current_value or "не установлено"
+        clear_hint = (
+            "Чтобы очистить необязательный Additional Key, введите -\n\n"
+            if setting_key == "lava_additional_key"
+            else ""
+        )
+        values_block = (
+            f"Текущее значение: <b>{current_display}</b>\n\n"
+            f"{clear_hint}"
+        )
     elif section == "support":
         support_username = settings.get("support_username", "support")
         news_channel_url = settings.get("news_channel_url") or "не задана"
-        prompt = "Введите ссылку на канал, @username или username:" if setting_key == "news_channel_url" else "Введите username без @:"
+        if setting_key == "news_channel_url":
+            prompt = "Введите ссылку на канал, @username или username:"
+        else:
+            prompt = "Введите username без @:"
         values_block = (
             "<blockquote>"
             f"📩 Поддержка: <b>@{support_username}</b>\n"
             f"📰 Новостной канал: <b>{news_channel_url}</b>"
+            "</blockquote>\n\n"
+            f"{prompt}"
+            "\n\n"
+        )
+    elif section == "subscription":
+        required_subscription_channel = settings.get("required_subscription_channel") or "не задан"
+        required_subscription_url = settings.get("required_subscription_url") or "не задана"
+        if setting_key == "required_subscription_channel":
+            prompt = "Введите @username, username или числовой ID канала. Чтобы отключить, введите -"
+        else:
+            prompt = "Введите ссылку для кнопки подписки, @username или username. Чтобы очистить, введите -"
+        values_block = (
+            "<blockquote>"
+            f"🔒 Канал для проверки: <b>{required_subscription_channel}</b>\n"
+            f"🔗 Ссылка для кнопки: <b>{required_subscription_url}</b>"
             "</blockquote>\n\n"
             f"{prompt}"
             "\n\n"
@@ -3533,6 +3814,33 @@ async def process_settings_value(message: Message, state: FSMContext) -> None:
             is_valid = False
             error_msg = "Значение не может быть пустым"
 
+    elif setting_key == "lava_shop_id":
+        try:
+            UUID(new_value)
+            new_value = new_value.lower()
+        except (ValueError, AttributeError):
+            is_valid = False
+            error_msg = "Shop ID должен быть корректным UUID из кабинета Lava"
+
+    elif setting_key == "lava_secret_key":
+        if not new_value:
+            is_valid = False
+            error_msg = "Secret Key не может быть пустым"
+
+    elif setting_key == "lava_additional_key":
+        if new_value == "-":
+            new_value = ""
+
+    elif setting_key == "lava_poll_interval_seconds":
+        try:
+            interval = int(new_value)
+            if interval < 3 or interval > 60:
+                raise ValueError
+            new_value = str(interval)
+        except ValueError:
+            is_valid = False
+            error_msg = "Интервал должен быть от 3 до 60 секунд"
+
     elif setting_key == "platega_poll_interval_seconds":
         try:
             interval = int(new_value)
@@ -3569,6 +3877,46 @@ async def process_settings_value(message: Message, state: FSMContext) -> None:
             is_valid = False
             error_msg = "Введите ссылку вида https://t.me/channel или @channel"
 
+    elif setting_key == "required_subscription_channel":
+        new_value = new_value.strip()
+        if new_value in ("", "-", "нет", "off", "disable"):
+            new_value = ""
+        elif re.match(r"^-?\d+$", new_value):
+            pass
+        elif new_value.startswith("@"):
+            username = new_value[1:]
+            if not re.match(r"^[A-Za-z0-9_]{5,32}$", username):
+                is_valid = False
+                error_msg = "Введите @username канала от 5 до 32 символов или числовой ID"
+            else:
+                new_value = f"@{username}"
+        elif re.match(r"^[A-Za-z0-9_]{5,32}$", new_value):
+            new_value = f"@{new_value}"
+        else:
+            match = re.match(r"^https?://(?:t\.me|telegram\.me)/([A-Za-z0-9_]{5,32})/?$", new_value)
+            if match:
+                new_value = f"@{match.group(1)}"
+            else:
+                is_valid = False
+                error_msg = "Для проверки подписки нужен @username, username или числовой ID канала"
+
+    elif setting_key == "required_subscription_url":
+        new_value = new_value.strip()
+        if new_value in ("", "-", "нет", "off", "disable"):
+            new_value = ""
+        elif new_value.startswith("@"):
+            username = new_value[1:]
+            if not re.match(r"^[A-Za-z0-9_]{5,32}$", username):
+                is_valid = False
+                error_msg = "Username канала может содержать только буквы, цифры и _"
+            else:
+                new_value = f"https://t.me/{username}"
+        elif re.match(r"^[A-Za-z0-9_]{5,32}$", new_value):
+            new_value = f"https://t.me/{new_value}"
+        elif not re.match(r"^https?://(t\.me|telegram\.me)/[A-Za-z0-9_+/-]+$", new_value):
+            is_valid = False
+            error_msg = "Введите ссылку вида https://t.me/channel, invite-ссылку или @channel"
+
     if not is_valid:
         if bot_message_id:
             try:
@@ -3593,6 +3941,12 @@ async def process_settings_value(message: Message, state: FSMContext) -> None:
     async with async_session_factory() as session:
         service = BotSettingsService(session, admin_id=admin_id)
         success = await service.set_setting(setting_key, new_value, old_value=old_value)
+        if success and setting_key in ("lava_shop_id", "lava_secret_key"):
+            await service.set_setting(
+                "lava_enabled",
+                "false",
+                old_value=current_settings.get("lava_enabled", "false"),
+            )
         await session.commit()
 
     # Сбрасываем кэш настроек
@@ -3767,11 +4121,12 @@ async def process_settings_value(message: Message, state: FSMContext) -> None:
                 except Exception:
                     pass
 
-        elif setting_key.startswith("platega_"):
+        elif setting_key.startswith("platega_") or setting_key == "payment_fee_platega":
             enabled = str(settings.get("platega_enabled", "false")).lower() in ("true", "1", "yes", "on")
             merchant = settings.get("platega_merchant_id", "")
             secret = settings.get("platega_secret", "")
             poll = settings.get("platega_poll_interval_seconds", "5")
+            fee = format_percent(settings.get("payment_fee_platega", "8"))
             merchant_display = (merchant[:8] + "..." + merchant[-4:]) if len(merchant) > 14 else (merchant or "не установлен")
             secret_display = (secret[:8] + "..." + secret[-4:]) if len(secret) > 14 else ("***" if secret else "не установлен")
 
@@ -3781,6 +4136,8 @@ async def process_settings_value(message: Message, state: FSMContext) -> None:
                 new_display = secret_display
             elif setting_key == "platega_poll_interval_seconds":
                 new_display = f"{new_value} сек."
+            elif setting_key == "payment_fee_platega":
+                new_display = f"{format_percent(new_value)}%"
             else:
                 new_display = new_value
 
@@ -3790,12 +4147,13 @@ async def process_settings_value(message: Message, state: FSMContext) -> None:
                         chat_id=message.chat.id,
                         message_id=bot_message_id,
                         text=(
-                            "🏦 <b>Настройки СБП</b>\n\n"
+                            "🏦 <b>Настройки Platega</b>\n\n"
                             f"✅ {setting_name} изменено на <b>{new_display}</b>\n\n"
                             "<blockquote>"
                             f"Статус: <b>{'включен' if enabled else 'выключен'}</b>\n"
                             f"MerchantId: <b>{merchant_display}</b>\n"
                             f"Secret: <b>{secret_display}</b>\n"
+                            f"Комиссия: <b>{fee}%</b>\n"
                             f"Автопроверка: <b>{poll} сек.</b>\n"
                             "Время платежа: <b>30 мин.</b>"
                             "</blockquote>\n\n"
@@ -3807,14 +4165,63 @@ async def process_settings_value(message: Message, state: FSMContext) -> None:
                 except Exception:
                     pass
 
-        elif setting_key in ("support_username", "news_channel_url"):
+        elif setting_key.startswith("lava_") or setting_key == "payment_fee_lava":
+            enabled = str(settings.get("lava_enabled", "false")).lower() in (
+                "true", "1", "yes", "on"
+            )
+            shop_id = settings.get("lava_shop_id", "") or ""
+            secret_key = settings.get("lava_secret_key", "") or ""
+            additional_key = settings.get("lava_additional_key", "") or ""
+            poll = settings.get("lava_poll_interval_seconds", "5")
+            fee = format_percent(settings.get("payment_fee_lava", "3.4"))
+
+            if setting_key == "lava_shop_id":
+                new_display = _mask_lava_shop_id(shop_id)
+            elif setting_key in ("lava_secret_key", "lava_additional_key"):
+                new_display = _mask_lava_key(new_value)
+            elif setting_key == "lava_poll_interval_seconds":
+                new_display = f"{new_value} сек."
+            elif setting_key == "payment_fee_lava":
+                new_display = f"{format_percent(new_value)}%"
+            else:
+                new_display = new_value
+
+            if bot_message_id:
+                try:
+                    await message.bot.edit_message_text(
+                        chat_id=message.chat.id,
+                        message_id=bot_message_id,
+                        text=(
+                            "🌋 <b>Настройки Lava / СБП</b>\n\n"
+                            f"✅ {setting_name} изменено на <b>{new_display}</b>\n\n"
+                            "<blockquote>"
+                            f"Статус: <b>{'включена' if enabled else 'выключена'}</b>\n"
+                            f"Shop ID: <b>{_mask_lava_shop_id(shop_id)}</b>\n"
+                            f"Secret Key: <b>{_mask_lava_key(secret_key)}</b>\n"
+                            f"Additional Key: <b>{_mask_lava_key(additional_key)}</b>\n"
+                            f"Комиссия: <b>{fee}%</b>\n"
+                            f"Автопроверка: <b>{poll} сек.</b>\n"
+                            "Метод оплаты: <b>только СБП</b>\n"
+                            "Время счёта: <b>30 мин.</b>"
+                            "</blockquote>\n\n"
+                            "После изменения Shop ID или Secret Key Lava нужно включить заново."
+                        ),
+                        reply_markup=get_settings_lava_keyboard(enabled),
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+
+        elif setting_key in (
+            "support_username",
+            "news_channel_url",
+        ):
             support_username = settings.get("support_username", "support")
             news_channel_url = settings.get("news_channel_url") or "не задана"
-            success_text = (
-                f"✅ Username поддержки изменён на <b>@{new_value}</b>"
-                if setting_key == "support_username"
-                else f"✅ Новостной канал изменён на <b>{new_value}</b>"
-            )
+            if setting_key == "support_username":
+                success_text = f"✅ Username поддержки изменён на <b>@{new_value}</b>"
+            else:
+                success_text = f"✅ Новостной канал изменён на <b>{new_value}</b>"
 
             if bot_message_id:
                 try:
@@ -3831,6 +4238,48 @@ async def process_settings_value(message: Message, state: FSMContext) -> None:
                             "Нажмите кнопку ниже чтобы изменить:"
                         ),
                         reply_markup=get_settings_support_keyboard(settings),
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+
+        elif setting_key in (
+            "required_subscription_channel",
+            "required_subscription_url",
+        ):
+            required_subscription_channel = settings.get("required_subscription_channel") or "не задан"
+            required_subscription_url = settings.get("required_subscription_url") or "не задана"
+            if setting_key == "required_subscription_channel":
+                success_text = f"✅ Канал обязательной подписки изменён на <b>{new_value or 'отключено'}</b>"
+            else:
+                success_text = f"✅ Ссылка обязательной подписки изменена на <b>{new_value or 'очищена'}</b>"
+
+            try:
+                bot_info = await message.bot.get_me()
+                bot_username = bot_info.username
+            except Exception as e:
+                logger.error(f"Failed to get bot username for subscription settings: {e}")
+                bot_username = None
+
+            async with async_session_factory() as session:
+                channels = await _get_subscription_channels(session)
+
+            if bot_message_id:
+                try:
+                    await message.bot.edit_message_text(
+                        chat_id=message.chat.id,
+                        message_id=bot_message_id,
+                        text=(
+                            "🔒 <b>ОП — обязательная подписка</b>\n\n"
+                            f"{success_text}\n\n"
+                            "<blockquote>"
+                            f"Канал для проверки: <b>{required_subscription_channel}</b>\n"
+                            f"Ссылка для кнопки: <b>{required_subscription_url}</b>"
+                            "</blockquote>\n\n"
+                            "Нажмите канал из списка, чтобы сделать его активным для ОП. "
+                            "Бот должен быть админом канала, иначе Telegram не даст проверить подписку пользователя."
+                        ),
+                        reply_markup=get_settings_subscription_keyboard(settings, bot_username, channels),
                         parse_mode="HTML",
                     )
                 except Exception:
@@ -3859,6 +4308,8 @@ async def callback_settings_cancel(callback: CallbackQuery, state: FSMContext) -
         await callback_settings_referral(callback)
     elif section == "support":
         await callback_settings_support(callback)
+    elif section == "subscription":
+        await callback_settings_subscription(callback)
     elif section == "media":
         await callback_settings_media(callback, state)
     elif section == "cryptobot":
@@ -3867,6 +4318,8 @@ async def callback_settings_cancel(callback: CallbackQuery, state: FSMContext) -
         await callback_settings_ton(callback)
     elif section == "platega":
         await callback_settings_platega(callback)
+    elif section == "lava":
+        await callback_settings_lava(callback)
     else:
         await callback_settings_menu(callback, state)
 

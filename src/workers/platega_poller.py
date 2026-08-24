@@ -1,6 +1,7 @@
 """Background poller for Platega payments."""
 import asyncio
 import logging
+from time import monotonic
 
 from aiogram import Bot
 
@@ -35,6 +36,8 @@ class PlategaPaymentPoller:
 
     async def _run(self) -> None:
         while not self._stop_event.is_set():
+            cycle_started_at = monotonic()
+            interval = 5
             try:
                 settings = await get_platega_settings()
                 interval = max(3, int(settings.get("poll_interval_seconds", 5)))
@@ -48,7 +51,8 @@ class PlategaPaymentPoller:
                 logger.error("Platega poller error: %s", e, exc_info=True)
                 interval = 5
 
+            remaining_delay = max(0.1, interval - (monotonic() - cycle_started_at))
             try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=interval)
+                await asyncio.wait_for(self._stop_event.wait(), timeout=remaining_delay)
             except asyncio.TimeoutError:
                 pass

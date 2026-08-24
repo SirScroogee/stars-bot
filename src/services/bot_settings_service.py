@@ -26,6 +26,9 @@ ENCRYPTED_SETTINGS = {
     "ton_wallet_address",
     "platega_merchant_id",
     "platega_secret",
+    "lava_shop_id",
+    "lava_secret_key",
+    "lava_additional_key",
 }
 
 # Ключ настроек в таблице settings
@@ -52,14 +55,23 @@ DEFAULT_BOT_SETTINGS = {
     "min_referral_withdrawal": "0.50",
     "payment_fee_cryptobot": "3",
     "payment_fee_ton": "0",
+    "payment_fee_platega": "8",
+    "payment_fee_lava": "3.4",
     "cryptobot_token": "",
     "ton_wallet_address": "",
     "platega_enabled": "false",
     "platega_merchant_id": "",
     "platega_secret": "",
     "platega_poll_interval_seconds": "5",
+    "lava_enabled": "false",
+    "lava_shop_id": "",
+    "lava_secret_key": "",
+    "lava_additional_key": "",
+    "lava_poll_interval_seconds": "5",
     "support_username": "support",
     "news_channel_url": "",
+    "required_subscription_channel": "",
+    "required_subscription_url": "",
     "menu_media": {},
 }
 
@@ -331,7 +343,6 @@ async def get_premium_costs() -> dict[int, Decimal]:
 # === Способы оплаты ===
 
 async def get_cryptobot_token() -> str | None:
-    from src.core.crypto import decrypt
     settings = await get_bot_settings()
     token = settings.get("cryptobot_token", "")
     if not token:
@@ -366,6 +377,14 @@ async def get_ton_fee() -> Decimal:
 async def get_platega_settings() -> dict:
     """Получить настройки Platega/СБП."""
     settings = await get_bot_settings()
+    try:
+        fee_percent = Decimal(settings.get("payment_fee_platega", "8"))
+        if fee_percent < 0 or fee_percent > 100:
+            raise ValueError("Platega fee must be between 0 and 100")
+    except (ValueError, TypeError, ArithmeticError):
+        logger.warning("Invalid payment_fee_platega setting, using 8%")
+        fee_percent = Decimal("8")
+
     return {
         "enabled": str(settings.get("platega_enabled", "false")).lower() in ("true", "1", "yes", "on"),
         "merchant_id": settings.get("platega_merchant_id", "") or "",
@@ -374,4 +393,37 @@ async def get_platega_settings() -> dict:
         "sbp_method_id": 2,
         "poll_interval_seconds": int(settings.get("platega_poll_interval_seconds", "5") or 5),
         "payment_ttl_minutes": 30,
+        "fee_percent": fee_percent,
+    }
+
+
+async def get_lava_settings() -> dict:
+    """Получить настройки Lava Business API."""
+    settings = await get_bot_settings()
+    try:
+        fee_percent = Decimal(settings.get("payment_fee_lava", "3.4"))
+        if fee_percent < 0 or fee_percent > 100:
+            raise ValueError("Lava fee must be between 0 and 100")
+    except (ValueError, TypeError, ArithmeticError):
+        logger.warning("Invalid payment_fee_lava setting, using 3.4%%")
+        fee_percent = Decimal("3.4")
+
+    try:
+        poll_interval = int(settings.get("lava_poll_interval_seconds", "5") or 5)
+    except (ValueError, TypeError):
+        poll_interval = 5
+
+    shop_id = settings.get("lava_shop_id", "") or ""
+    secret_key = settings.get("lava_secret_key", "") or ""
+    return {
+        "enabled": str(settings.get("lava_enabled", "false")).lower()
+        in ("true", "1", "yes", "on"),
+        "configured": bool(shop_id and secret_key),
+        "shop_id": shop_id,
+        "secret_key": secret_key,
+        "additional_key": settings.get("lava_additional_key", "") or "",
+        "base_url": "https://api.lava.ru",
+        "poll_interval_seconds": max(3, min(60, poll_interval)),
+        "payment_ttl_minutes": 30,
+        "fee_percent": fee_percent,
     }

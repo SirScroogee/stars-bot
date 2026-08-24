@@ -48,6 +48,7 @@ class PaymentProvider(enum.Enum):
     TON = "ton"
     CRYPTOBOT = "cryptobot"
     PLATEGA = "platega"
+    LAVA = "lava"
 
 
 class ProductType(enum.Enum):
@@ -69,6 +70,25 @@ class TransactionType(enum.Enum):
 class LedgerOperation(enum.Enum):
     CREDIT = "credit"
     DEBIT = "debit"
+
+
+class AdminGiftStatus(enum.Enum):
+    PENDING = "pending"
+    AWAITING_PAYMENT = "awaiting_payment"
+    SENDING = "sending"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    UNKNOWN = "unknown"
+
+
+class AdminGiftPaymentStatus(enum.Enum):
+    INVOICE_PENDING = "invoice_pending"
+    INVOICE_SENT = "invoice_sent"
+    PRECHECKOUT = "pre_checkout"
+    PAID = "paid"
+    FAILED = "failed"
+    REFUNDED = "refunded"
+    REFUND_FAILED = "refund_failed"
 
 
 # ============ MODELS ============
@@ -114,6 +134,113 @@ class User(Base):
     )
 
 
+class AdminGift(Base):
+    """Audit record for a Telegram Gift sent by an administrator."""
+
+    __tablename__ = "admin_gifts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    operation_key: Mapped[str] = mapped_column(String(64))
+
+    admin_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"))
+    admin_username_snapshot: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    recipient_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"))
+    recipient_username_snapshot: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    recipient_was_banned: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    gift_id: Mapped[str] = mapped_column(String(255))
+    gift_emoji: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    gift_star_count: Mapped[int] = mapped_column(Integer)
+    pay_for_upgrade: Mapped[bool] = mapped_column(Boolean, default=False)
+    gift_text: Mapped[str] = mapped_column(String(128))
+    bot_balance_before: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    controller_chat_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    controller_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+
+    status: Mapped[str] = mapped_column(
+        String(20), default=AdminGiftStatus.PENDING.value
+    )
+    error_type: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    payments: Mapped[list["AdminGiftPayment"]] = relationship(
+        "AdminGiftPayment",
+        back_populates="gift_attempt",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        UniqueConstraint("operation_key", name="uq_admin_gifts_operation_key"),
+        Index("ix_admin_gifts_recipient_created", "recipient_id", "created_at"),
+        Index("ix_admin_gifts_admin_created", "admin_id", "created_at"),
+        Index("ix_admin_gifts_status_created", "status", "created_at"),
+    )
+
+
+class AdminGiftPayment(Base):
+    """One Telegram Stars invoice issued to fund an administrator Gift attempt."""
+
+    __tablename__ = "admin_gift_payments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    gift_attempt_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("admin_gifts.id", ondelete="CASCADE")
+    )
+    invoice_payload: Mapped[str] = mapped_column(String(128))
+    requested_stars: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(
+        String(20), default=AdminGiftPaymentStatus.INVOICE_PENDING.value
+    )
+
+    invoice_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    pre_checkout_payer_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, nullable=True
+    )
+    pre_checkout_query_id: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )
+    payer_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    telegram_payment_charge_id: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )
+    provider_payment_charge_id: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )
+    paid_stars: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    pre_checkout_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    refunded_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    gift_attempt: Mapped["AdminGift"] = relationship(
+        "AdminGift", back_populates="payments"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("invoice_payload", name="uq_admin_gift_payments_payload"),
+        UniqueConstraint(
+            "telegram_payment_charge_id",
+            name="uq_admin_gift_payments_telegram_charge",
+        ),
+        Index(
+            "ix_admin_gift_payments_attempt_status",
+            "gift_attempt_id",
+            "status",
+        ),
+    )
+
+
 class Order(Base):
     __tablename__ = "orders"
 
@@ -136,6 +263,21 @@ class Order(Base):
     fragment_tx_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     fragment_ton_spent: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 9), nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    last_error_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    # Durable processing state. Redis is only a delivery queue; retry/accounting
+    # state must survive queue recovery and application restarts.
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    processing_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    next_retry_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_fragment_account_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Notification deduplication for delayed paid orders.
+    admin_alerted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    critical_alerted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    user_delay_notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     # ID сообщения для редактирования при изменении статуса
     message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
@@ -152,10 +294,39 @@ class Order(Base):
     transactions: Mapped[list["Transaction"]] = relationship(
         "Transaction", back_populates="order"
     )
+    attempts: Mapped[list["OrderAttempt"]] = relationship(
+        "OrderAttempt", back_populates="order", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("ix_orders_user_status", "user_id", "status"),
         Index("ix_orders_created_at", "created_at"),
+    )
+
+
+class OrderAttempt(Base):
+    """Persistent history of every order-processing attempt or deferral."""
+
+    __tablename__ = "order_attempts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    order_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    fragment_account_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    error_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    next_retry_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    order: Mapped["Order"] = relationship("Order", back_populates="attempts")
+
+    __table_args__ = (
+        UniqueConstraint("order_id", "attempt_number", name="uq_order_attempt_number"),
+        Index("ix_order_attempts_order_started", "order_id", "started_at"),
     )
 
 
@@ -218,6 +389,48 @@ class PlategaPayment(Base):
     __table_args__ = (
         Index("ix_platega_payments_status_created", "status", "created_at"),
         Index("ix_platega_payments_user_status", "user_id", "status"),
+    )
+
+
+class LavaPayment(Base):
+    __tablename__ = "lava_payments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), index=True)
+    order_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("orders.id"), nullable=True)
+
+    operation_type: Mapped[str] = mapped_column(String(20))  # deposit / stars / premium
+    provider_order_id: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    provider_invoice_id: Mapped[Optional[str]] = mapped_column(
+        String(255), unique=True, index=True, nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(20), default=PaymentStatus.PENDING.value)
+
+    amount_usdt: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    base_amount_rub: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    amount_rub: Mapped[Decimal] = mapped_column(Numeric(18, 2))
+    fee_percent: Mapped[Decimal] = mapped_column(Numeric(8, 4), default=Decimal("3.4000"))
+    usdt_rub_rate: Mapped[Decimal] = mapped_column(Numeric(18, 6))
+    rate_source: Mapped[str] = mapped_column(String(20))
+
+    payment_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    request_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    response_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index("ix_lava_payments_status_created", "status", "created_at"),
+        Index("ix_lava_payments_user_status", "user_id", "status"),
     )
 
 
@@ -503,6 +716,163 @@ class BotChannel(Base):
 
     __table_args__ = (
         Index("ix_bot_channels_added_by", "added_by_user_id"),
+    )
+
+
+class Giveaway(Base):
+    """A scheduled or active giveaway managed by bot administrators."""
+
+    __tablename__ = "giveaways"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String(200))
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    photo_file_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    # scheduled / active / drawing / completed / cancelled
+    status: Mapped[str] = mapped_column(String(20), default="scheduled")
+    # purchase_once / tickets_per_order / tickets_per_stars /
+    # registration_all (activity during campaign) / registration_new
+    participation_mode: Mapped[str] = mapped_column(String(30))
+    # all / stars / premium; unused for registration modes
+    product_filter: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    tickets_per_order: Mapped[int] = mapped_column(Integer, default=1)
+    stars_per_ticket: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    starts_at: Mapped[datetime] = mapped_column(DateTime)
+    ends_at: Mapped[datetime] = mapped_column(DateTime)
+    # Legacy compatibility column. Draws now happen at ends_at without a grace delay.
+    grace_minutes: Mapped[int] = mapped_column(Integer, default=0)
+
+    publish_chat_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    publish_announcement: Mapped[bool] = mapped_column(Boolean, default=False)
+    publish_results: Mapped[bool] = mapped_column(Boolean, default=False)
+    announcement_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    results_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    announcement_last_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    results_last_attempt_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    announcement_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    results_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    created_by: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"))
+    audit_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    cancel_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    activated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    cancelled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    prizes: Mapped[list["GiveawayPrize"]] = relationship(
+        "GiveawayPrize", back_populates="giveaway", cascade="all, delete-orphan"
+    )
+    entries: Mapped[list["GiveawayEntry"]] = relationship(
+        "GiveawayEntry", back_populates="giveaway", cascade="all, delete-orphan"
+    )
+    winners: Mapped[list["GiveawayWinner"]] = relationship(
+        "GiveawayWinner", back_populates="giveaway", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("ix_giveaways_status_starts", "status", "starts_at"),
+        Index("ix_giveaways_status_ends", "status", "ends_at"),
+    )
+
+
+class GiveawayPrize(Base):
+    __tablename__ = "giveaway_prizes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    giveaway_id: Mapped[int] = mapped_column(Integer, ForeignKey("giveaways.id", ondelete="CASCADE"))
+    place: Mapped[int] = mapped_column(Integer)
+    # stars / premium / custom. Payout is intentionally manual.
+    prize_type: Mapped[str] = mapped_column(String(20))
+    amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2), nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_issued: Mapped[bool] = mapped_column(Boolean, default=False)
+    issued_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    issued_by: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    giveaway: Mapped["Giveaway"] = relationship("Giveaway", back_populates="prizes")
+    winner: Mapped[Optional["GiveawayWinner"]] = relationship(
+        "GiveawayWinner", back_populates="prize", uselist=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("giveaway_id", "place", name="uq_giveaway_prize_place"),
+    )
+
+
+class GiveawayEntry(Base):
+    __tablename__ = "giveaway_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    giveaway_id: Mapped[int] = mapped_column(Integer, ForeignKey("giveaways.id", ondelete="CASCADE"))
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"))
+    source: Mapped[str] = mapped_column(String(30))
+    tickets: Mapped[int] = mapped_column(Integer, default=0)
+    purchase_count: Mapped[int] = mapped_column(Integer, default=0)
+    stars_purchased: Mapped[int] = mapped_column(Integer, default=0)
+    joined_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+    join_notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    giveaway: Mapped["Giveaway"] = relationship("Giveaway", back_populates="entries")
+
+    __table_args__ = (
+        UniqueConstraint("giveaway_id", "user_id", name="uq_giveaway_entry_user"),
+        Index("ix_giveaway_entries_giveaway_tickets", "giveaway_id", "tickets"),
+        Index("ix_giveaway_entries_user", "user_id"),
+    )
+
+
+class GiveawayEntryOrder(Base):
+    __tablename__ = "giveaway_entry_orders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    giveaway_id: Mapped[int] = mapped_column(Integer, ForeignKey("giveaways.id", ondelete="CASCADE"))
+    order_id: Mapped[int] = mapped_column(Integer, ForeignKey("orders.id"))
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"))
+    tickets_awarded: Mapped[int] = mapped_column(Integer, default=0)
+    order_quantity: Mapped[int] = mapped_column(Integer)
+    processed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("giveaway_id", "order_id", name="uq_giveaway_entry_order"),
+        Index("ix_giveaway_entry_orders_order", "order_id"),
+        Index("ix_giveaway_entry_orders_notify", "notified_at", "tickets_awarded"),
+    )
+
+
+class GiveawayWinner(Base):
+    __tablename__ = "giveaway_winners"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    giveaway_id: Mapped[int] = mapped_column(Integer, ForeignKey("giveaways.id", ondelete="CASCADE"))
+    prize_id: Mapped[int] = mapped_column(Integer, ForeignKey("giveaway_prizes.id"), unique=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"))
+    place: Mapped[int] = mapped_column(Integer)
+    tickets_snapshot: Mapped[int] = mapped_column(Integer)
+    random_value: Mapped[int] = mapped_column(BigInteger)
+    total_weight_before: Mapped[int] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    giveaway: Mapped["Giveaway"] = relationship("Giveaway", back_populates="winners")
+    prize: Mapped["GiveawayPrize"] = relationship("GiveawayPrize", back_populates="winner")
+
+    __table_args__ = (
+        UniqueConstraint("giveaway_id", "place", name="uq_giveaway_winner_place"),
+        UniqueConstraint("giveaway_id", "user_id", name="uq_giveaway_winner_user"),
+        Index("ix_giveaway_winners_user", "user_id"),
     )
 
 
