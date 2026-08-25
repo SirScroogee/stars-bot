@@ -8,6 +8,7 @@ import secrets
 from datetime import datetime
 
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramNetworkError
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, LabeledPrice, Message, PreCheckoutQuery
@@ -42,9 +43,9 @@ from src.services.telegram_logger import tg_logger
 
 logger = logging.getLogger(__name__)
 router = Router(name="admin_gifts")
+_confirmation_locks: dict[int, asyncio.Lock] = {}
 
 TELEGRAM_GIFT_TEXT_LIMIT = 128
-WATERMARK_SLOGAN = "дешёвые и быстрые звёзды"
 
 
 class AdminGiftStates(StatesGroup):
@@ -57,13 +58,12 @@ def telegram_text_length(value: str) -> int:
     return len(value.encode("utf-16-le")) // 2
 
 
-def build_gift_text(comment: str | None, watermark: str) -> str:
-    clean_comment = (comment or "").strip()
-    return f"{clean_comment}\n\n{watermark}" if clean_comment else watermark
+def build_gift_text(comment: str | None) -> str:
+    return (comment or "").strip()
 
 
-def max_comment_length(watermark: str) -> int:
-    return max(0, TELEGRAM_GIFT_TEXT_LIMIT - telegram_text_length(watermark) - 2)
+def max_comment_length() -> int:
+    return TELEGRAM_GIFT_TEXT_LIMIT
 
 
 def validate_gift_pre_checkout(
@@ -154,7 +154,24 @@ async def _edit_controller(
         text=text,
         reply_markup=reply_markup,
         parse_mode="HTML",
+        request_timeout=12,
     )
+
+
+async def _get_live_gifts_and_balance(bot: Bot):
+    """Retry read-only Telegram Gift preflight once after a transient timeout."""
+    for attempt in range(2):
+        try:
+            return await asyncio.gather(
+                bot.get_available_gifts(request_timeout=12),
+                bot.get_my_star_balance(request_timeout=12),
+            )
+        except TelegramNetworkError:
+            if attempt:
+                raise
+            logger.warning("Retrying Telegram Gift preflight after a network error")
+            await asyncio.sleep(0.5)
+    raise RuntimeError("Telegram Gift preflight retry loop ended unexpectedly")
 
 
 async def _find_registered_user(value: str) -> User | None:
@@ -232,23 +249,18 @@ async def _start_recipient_search(
 
 async def _load_catalog(bot: Bot, state: FSMContext) -> str | None:
     try:
-        gifts, balance, me = await asyncio.gather(
+        gifts, balance = await asyncio.gather(
             bot.get_available_gifts(request_timeout=20),
             bot.get_my_star_balance(request_timeout=20),
-            bot.get_me(request_timeout=20),
         )
     except Exception as exc:
         logger.warning("Could not load Telegram Gifts catalog: %s", exc)
         return "Не удалось получить каталог подарков или баланс бота. Попробуйте ещё раз."
 
-    username = me.username or "bot"
-    watermark = f"@{username} — {WATERMARK_SLOGAN}"
     available = _available_gift_dicts(gifts)
     await state.update_data(
         available_gifts=available,
         bot_star_balance=balance.amount,
-        bot_username=username,
-        gift_watermark=watermark,
     )
     if not available:
         return "Telegram сейчас не возвращает ни одного доступного подарка."
@@ -332,9 +344,7 @@ async def _show_comment_prompt(
     *,
     error: str | None = None,
 ) -> None:
-    data = await state.get_data()
-    watermark = data.get("gift_watermark") or f"@bot — {WATERMARK_SLOGAN}"
-    limit = max_comment_length(watermark)
+    limit = max_comment_length()
     await state.set_state(AdminGiftStates.waiting_comment)
     prefix = f"❌ <b>{html.escape(error)}</b>\n\n" if error else ""
     await _edit_controller(
@@ -343,9 +353,7 @@ async def _show_comment_prompt(
         prefix
         + "✍️ <b>Комментарий к подарку</b>\n\n"
         f"Введите комментарий (до <b>{limit}</b> символов) или нажмите "
-        "«Без комментария».\n\n"
-        "К подарку в любом случае будет добавлена подпись:\n"
-        f"<blockquote>{html.escape(watermark)}</blockquote>",
+        "«Без комментария». Подарок без комментария будет отправлен без подписи.",
         admin_gift_comment_keyboard(),
     )
 
@@ -359,13 +367,12 @@ async def _show_confirmation(
 ) -> None:
     data = await state.get_data()
     gift = data.get("selected_gift")
-    watermark = data.get("gift_watermark") or f"@bot — {WATERMARK_SLOGAN}"
-    gift_text = build_gift_text(comment, watermark)
+    gift_text = build_gift_text(comment)
     if telegram_text_length(gift_text) > TELEGRAM_GIFT_TEXT_LIMIT:
         await _show_comment_prompt(
             bot,
             state,
-            error=f"Полная подпись превышает лимит {TELEGRAM_GIFT_TEXT_LIMIT} символов.",
+            error=f"Комментарий превышает лимит {TELEGRAM_GIFT_TEXT_LIMIT} символов.",
         )
         return
 
@@ -377,6 +384,12 @@ async def _show_confirmation(
     )
     data = await state.get_data()
     prefix = f"⚠️ <b>{html.escape(error)}</b>\n\n" if error else ""
+    comment_preview = (
+        "📝 Комментарий к подарку:\n"
+        f"<blockquote>{html.escape(gift_text)}</blockquote>"
+        if gift_text
+        else "📝 Комментарий: <i>без комментария</i>"
+    )
     await _edit_controller(
         bot,
         state,
@@ -386,8 +399,7 @@ async def _show_confirmation(
         f"{html.escape(gift.get('emoji') or '🎁')} Стоимость: "
         f"<b>{gift['star_count']:,} Stars</b>\n"
         f"⭐ Баланс бота: <b>{int(data.get('bot_star_balance') or 0):,}</b> Stars\n\n"
-        "📝 Текст подарка:\n"
-        f"<blockquote>{html.escape(gift_text)}</blockquote>"
+        + comment_preview
         + _banned_warning(data)
         + "\n\n<b>Отправка необратима.</b>",
         admin_gift_confirm_keyboard(),
@@ -958,6 +970,25 @@ async def callback_admin_gift_page(
 ) -> None:
     if not await check_admin(callback):
         return
+    data = await state.get_data()
+    if not all(
+        data.get(key)
+        for key in (
+            "controller_chat_id",
+            "controller_message_id",
+            "recipient_id",
+            "available_gifts",
+        )
+    ):
+        await _start_recipient_search(
+            bot,
+            state,
+            chat_id=callback.message.chat.id,
+            message_id=callback.message.message_id,
+            error="Сессия выбора подарка устарела. Выберите получателя заново.",
+        )
+        await safe_callback_answer(callback, "Сессия выбора обновлена")
+        return
     page = int(callback.data.rsplit(":", 1)[-1])
     await _show_catalog(bot, state, page=page)
     await safe_callback_answer(callback)
@@ -1018,16 +1049,14 @@ async def message_admin_gift_comment(message: Message, state: FSMContext, bot: B
         return
     comment = message.text or ""
     await _delete_admin_input(message)
-    data = await state.get_data()
-    watermark = data.get("gift_watermark") or f"@bot — {WATERMARK_SLOGAN}"
     if not comment.strip():
         await _show_comment_prompt(bot, state, error="Комментарий не может быть пустым.")
         return
-    if telegram_text_length(build_gift_text(comment, watermark)) > TELEGRAM_GIFT_TEXT_LIMIT:
+    if telegram_text_length(build_gift_text(comment)) > TELEGRAM_GIFT_TEXT_LIMIT:
         await _show_comment_prompt(
             bot,
             state,
-            error=f"Комментарий слишком длинный. Максимум: {max_comment_length(watermark)} символов.",
+            error=f"Комментарий слишком длинный. Максимум: {max_comment_length()} символов.",
         )
         return
     await _show_confirmation(bot, state, comment)
@@ -1049,33 +1078,61 @@ async def callback_admin_gift_confirm(
 ) -> None:
     if not await check_admin(callback):
         return
+    lock = _confirmation_locks.setdefault(callback.from_user.id, asyncio.Lock())
+    if lock.locked():
+        await safe_callback_answer(
+            callback,
+            "Отправка уже проверяется. Дождитесь результата.",
+            show_alert=True,
+        )
+        return
+    async with lock:
+        await _process_admin_gift_confirm(callback, state, bot)
+
+
+async def _process_admin_gift_confirm(
+    callback: CallbackQuery, state: FSMContext, bot: Bot
+) -> None:
     data = await state.get_data()
     selected = data.get("selected_gift")
     operation_key = data.get("operation_key")
     gift_text = data.get("gift_text")
     recipient_id = data.get("recipient_id")
-    if not selected or not operation_key or not gift_text or not recipient_id:
+    if (
+        not selected
+        or not operation_key
+        or gift_text is None
+        or not recipient_id
+    ):
+        await _start_recipient_search(
+            bot,
+            state,
+            chat_id=callback.message.chat.id,
+            message_id=callback.message.message_id,
+            error="Данные отправки устарели. Выберите получателя заново.",
+        )
         await safe_callback_answer(
             callback,
-            "Данные устарели. Начните отправку заново.",
+            "Данные устарели. Форма восстановлена.",
             show_alert=True,
         )
         return
 
     await safe_callback_answer(callback, "Проверяю и отправляю…")
-    await _edit_controller(
-        bot,
-        state,
-        "⏳ <b>Проверяю цену, наличие и баланс…</b>\n\n"
-        "Не нажимайте кнопку отправки повторно.",
-        None,
-    )
+    try:
+        await _edit_controller(
+            bot,
+            state,
+            "⏳ <b>Проверяю цену, наличие и баланс…</b>\n\n"
+            "Не нажимайте кнопку отправки повторно.",
+            None,
+        )
+    except TelegramNetworkError as exc:
+        # A status edit is cosmetic and must not cancel the idempotent operation.
+        logger.warning("Could not show Gift preflight status, continuing: %s", exc)
 
     try:
-        gifts, balance = await asyncio.gather(
-            bot.get_available_gifts(request_timeout=20),
-            bot.get_my_star_balance(request_timeout=20),
-        )
+        gifts, balance = await _get_live_gifts_and_balance(bot)
     except Exception as exc:
         logger.warning("Gift preflight failed: %s", exc)
         await _show_confirmation(

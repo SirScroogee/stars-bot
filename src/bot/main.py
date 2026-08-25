@@ -103,9 +103,9 @@ async def main() -> None:
     # Initialize Telegram clients before workers so recovered orders can always
     # produce user and administrator notifications during startup.
     session = (
-        AiohttpSession(proxy=LOCAL_TELEGRAM_PROXY)
+        AiohttpSession(proxy=LOCAL_TELEGRAM_PROXY, timeout=15)
         if LOCAL_TELEGRAM_PROXY
-        else AiohttpSession()
+        else AiohttpSession(timeout=15)
     )
     bot = SafeBot(
         token=config.bot_token,

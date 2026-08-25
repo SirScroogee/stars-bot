@@ -5,6 +5,7 @@ import logging
 from typing import Any
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
@@ -12,6 +13,8 @@ from aiogram.types import (
     ReplyKeyboardRemove,
     ForceReply,
 )
+
+from src.bot.callback_utils import is_message_not_modified_error
 
 logger = logging.getLogger(__name__)
 
@@ -108,18 +111,24 @@ class SafeBot(Bot):
             logger.warning(f"Blocked pattern detected in edit_message_text")
             text = _sanitize_text(text)
 
-        return await super().edit_message_text(
-            text=text,
-            chat_id=chat_id,
-            message_id=message_id,
-            inline_message_id=inline_message_id,
-            parse_mode=parse_mode,
-            entities=entities,
-            link_preview_options=link_preview_options,
-            reply_markup=reply_markup,
-            disable_web_page_preview=disable_web_page_preview,
-            **kwargs,
-        )
+        try:
+            return await super().edit_message_text(
+                text=text,
+                chat_id=chat_id,
+                message_id=message_id,
+                inline_message_id=inline_message_id,
+                parse_mode=parse_mode,
+                entities=entities,
+                link_preview_options=link_preview_options,
+                reply_markup=reply_markup,
+                disable_web_page_preview=disable_web_page_preview,
+                **kwargs,
+            )
+        except TelegramBadRequest as exc:
+            if is_message_not_modified_error(exc):
+                logger.debug("Ignoring an idempotent message edit")
+                return True
+            raise
 
     async def answer_callback_query(
         self,

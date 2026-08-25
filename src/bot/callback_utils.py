@@ -15,6 +15,12 @@ def is_stale_callback_error(exception: BaseException) -> bool:
     return "query is too old" in message or "query id is invalid" in message
 
 
+def is_message_not_modified_error(exception: BaseException) -> bool:
+    if not isinstance(exception, TelegramBadRequest):
+        return False
+    return "message is not modified" in str(exception).lower()
+
+
 async def safe_callback_answer(callback: CallbackQuery, *args, **kwargs) -> bool:
     try:
         await callback.answer(*args, **kwargs)

@@ -1,13 +1,15 @@
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.methods import SendGift
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.bot.handlers.admin_gifts import (
     TELEGRAM_GIFT_TEXT_LIMIT,
+    _get_live_gifts_and_balance,
     _issue_payment_invoice,
     _refund_paid_topups,
     build_gift_text,
@@ -50,23 +52,39 @@ def test_admin_menu_contains_native_gift_action() -> None:
     assert "🎁 Подарить подарок" in _button_texts(markup)
 
 
-def test_gift_text_always_ends_with_watermark() -> None:
-    watermark = "@dobro_star_bot — дешёвые и быстрые звёзды"
-
-    assert build_gift_text(None, watermark) == watermark
-    assert build_gift_text("С праздником!", watermark) == (
-        "С праздником!\n\n" + watermark
+@pytest.mark.asyncio
+async def test_read_only_gift_preflight_retries_one_network_timeout() -> None:
+    timeout = TelegramNetworkError(
+        method=SimpleNamespace(),
+        message="Request timeout error",
     )
-    assert build_gift_text("  С праздником!  ", watermark).endswith(watermark)
+    bot = SimpleNamespace(
+        get_available_gifts=AsyncMock(side_effect=[timeout, "gifts"]),
+        get_my_star_balance=AsyncMock(side_effect=["old-balance", "balance"]),
+    )
+
+    with patch("src.bot.handlers.admin_gifts.asyncio.sleep", AsyncMock()) as sleep:
+        gifts, balance = await _get_live_gifts_and_balance(bot)
+
+    assert (gifts, balance) == ("gifts", "balance")
+    assert bot.get_available_gifts.await_count == 2
+    assert bot.get_my_star_balance.await_count == 2
+    sleep.assert_awaited_once_with(0.5)
 
 
-def test_gift_comment_limit_includes_watermark_and_utf16() -> None:
-    watermark = "@dobro_star_bot — дешёвые и быстрые звёзды"
-    comment = "a" * max_comment_length(watermark)
-    full_text = build_gift_text(comment, watermark)
+def test_gift_text_contains_only_optional_admin_comment() -> None:
+    assert build_gift_text(None) == ""
+    assert build_gift_text("") == ""
+    assert build_gift_text("С праздником!") == "С праздником!"
+    assert build_gift_text("  С праздником!  ") == "С праздником!"
+
+
+def test_gift_comment_limit_uses_full_telegram_utf16_budget() -> None:
+    comment = "a" * max_comment_length()
+    full_text = build_gift_text(comment)
 
     assert telegram_text_length(full_text) == TELEGRAM_GIFT_TEXT_LIMIT
-    assert telegram_text_length(build_gift_text(comment + "🎁", watermark)) > TELEGRAM_GIFT_TEXT_LIMIT
+    assert telegram_text_length(build_gift_text(comment + "🎁")) > TELEGRAM_GIFT_TEXT_LIMIT
 
 
 def test_catalog_is_dynamic_and_has_no_upgrade_action() -> None:
@@ -131,7 +149,7 @@ def _attempt(status=AdminGiftStatus.PENDING.value):
         id=7,
         recipient_id=123456,
         gift_id="gift-id",
-        gift_text="Поздравляю!\n\n@dobro_star_bot — дешёвые и быстрые звёзды",
+        gift_text="Поздравляю!",
         status=status,
         error_message=None,
     )
@@ -149,7 +167,20 @@ async def test_send_attempt_is_claimed_once_and_never_pays_for_upgrade() -> None
     assert len(bot.calls) == 1
     assert bot.calls[0]["user_id"] == 123456
     assert bot.calls[0]["pay_for_upgrade"] is False
-    assert bot.calls[0]["text"].endswith("дешёвые и быстрые звёзды")
+    assert bot.calls[0]["text"] == "Поздравляю!"
+
+
+@pytest.mark.asyncio
+async def test_gift_without_comment_is_sent_without_text() -> None:
+    bot = FakeBot()
+    attempt = _attempt()
+    attempt.gift_text = ""
+    service = FakeGiftService(attempt, bot)
+
+    outcome = await service.send_attempt(7, 42)
+
+    assert outcome.status == AdminGiftStatus.SUCCEEDED.value
+    assert bot.calls[0]["text"] is None
 
 
 @pytest.mark.asyncio
@@ -350,7 +381,7 @@ async def test_paid_invoice_is_idempotent_and_reactivates_gift() -> None:
                 recipient_id=123456,
                 gift_id="gift-id",
                 gift_star_count=15,
-                gift_text="@bot — дешёвые и быстрые звёзды",
+                gift_text="",
                 bot_balance_before=5,
                 status=AdminGiftStatus.PENDING.value,
             )
@@ -471,7 +502,7 @@ async def test_stale_pre_checkout_reservation_can_be_reclaimed() -> None:
                 recipient_id=123456,
                 gift_id="gift-id",
                 gift_star_count=15,
-                gift_text="@bot — дешёвые и быстрые звёзды",
+                gift_text="",
                 status=AdminGiftStatus.AWAITING_PAYMENT.value,
             )
             session.add(attempt)

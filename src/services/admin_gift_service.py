@@ -584,7 +584,7 @@ class AdminGiftService:
                 user_id=attempt.recipient_id,
                 gift_id=attempt.gift_id,
                 pay_for_upgrade=False,
-                text=attempt.gift_text,
+                text=attempt.gift_text or None,
                 request_timeout=30,
             )
             if not sent:
