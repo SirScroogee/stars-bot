@@ -321,6 +321,14 @@ def archived_gift_manage_keyboard(
             )
         ]
     )
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                text="🌐 Загрузить удалённые подарки",
+                callback_data="admin:gifts:archive:sync",
+            )
+        ]
+    )
     if has_recipient:
         buttons.append(
             [

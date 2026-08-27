@@ -45,6 +45,11 @@ from src.services.archived_gift_service import (
     ArchivedGiftAlreadyExistsError,
     ArchivedGiftService,
 )
+from src.services.archived_gift_catalog import (
+    ArchivedGiftCatalogError,
+    ArchivedGiftCatalogItem,
+    parse_archived_gift_catalog,
+)
 
 
 def _callback_values(markup) -> list[str]:
@@ -163,6 +168,7 @@ def test_archived_gift_management_keyboards_use_stable_database_ids() -> None:
     assert "admin:gifts:archive:item:41" in callbacks
     assert "admin:gifts:archive:item:99" in callbacks
     assert "admin:gifts:archive:add" in callbacks
+    assert "admin:gifts:archive:sync" in callbacks
     assert "admin:gifts:archive:choose" in callbacks
 
     active_item = archived_gift_item_keyboard(gifts[0], has_recipient=True)
@@ -289,6 +295,108 @@ async def test_archived_gift_crud_is_shared_and_enforces_unique_gift_id() -> Non
             deleted = await service.delete(gift_database_id)
             assert deleted.gift_id == "5170233102089322756"
             assert await service.get(gift_database_id) is None
+    finally:
+        await engine.dispose()
+
+
+def test_external_archived_catalog_parses_only_valid_sold_out_gifts() -> None:
+    catalog = {
+        "star_gifts_full": {
+            "gifts": [
+                {
+                    "id": 123,
+                    "stars": 50,
+                    "sold_out": True,
+                    "title": None,
+                    "sticker": {"attributes": [{"alt": "🎄"}]},
+                },
+                {
+                    "id": 456,
+                    "stars": 100,
+                    "sold_out": False,
+                    "title": "Still available",
+                },
+                {"id": "invalid", "stars": 10, "sold_out": True},
+            ]
+        }
+    }
+    details = {
+        "upgraded": [
+            {"regular_id": "123", "full_name": "Holiday Tree"},
+        ]
+    }
+
+    gifts = parse_archived_gift_catalog(catalog, details=details)
+
+    assert gifts == [
+        ArchivedGiftCatalogItem(
+            gift_id="123",
+            title="Holiday Tree",
+            emoji="🎄",
+            star_count=50,
+        )
+    ]
+
+
+def test_external_archived_catalog_rejects_invalid_or_empty_payload() -> None:
+    with pytest.raises(ArchivedGiftCatalogError):
+        parse_archived_gift_catalog({})
+    with pytest.raises(ArchivedGiftCatalogError):
+        parse_archived_gift_catalog(
+            {"star_gifts_full": {"gifts": [{"id": 1, "stars": 1}]}}
+        )
+
+
+@pytest.mark.asyncio
+async def test_external_import_preserves_existing_gift_and_adds_missing() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(
+            lambda sync_connection: Base.metadata.create_all(
+                sync_connection,
+                tables=[User.__table__, ArchivedGift.__table__],
+            )
+        )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    try:
+        async with session_factory() as session:
+            session.add(
+                User(
+                    id=42,
+                    username="admin",
+                    language_code="ru",
+                    referral_code="IMPORT_ADMIN",
+                    is_admin=True,
+                )
+            )
+            await session.commit()
+            service = ArchivedGiftService(session)
+            existing = await service.create(
+                gift_id="100",
+                title="Ручное название",
+                emoji="🎁",
+                star_count=999,
+                sticker_file_id="manual-preview",
+                admin_id=42,
+            )
+
+            imported, preserved = await service.import_missing(
+                [
+                    ArchivedGiftCatalogItem("100", "External", "❌", 1),
+                    ArchivedGiftCatalogItem("200", "Imported", "🎄", 50),
+                ],
+                admin_id=42,
+            )
+
+            assert (imported, preserved) == (1, 1)
+            assert existing.title == "Ручное название"
+            assert existing.star_count == 999
+            added = await service.get_by_gift_id("200")
+            assert added is not None
+            assert added.title == "Imported"
+            assert added.star_count == 50
+            assert added.is_active is True
     finally:
         await engine.dispose()
 

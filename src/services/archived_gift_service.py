@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import ArchivedGift
+from src.services.archived_gift_catalog import ArchivedGiftCatalogItem
 
 
 class ArchivedGiftAlreadyExistsError(ValueError):
@@ -69,6 +70,43 @@ class ArchivedGiftService:
             await self._session.rollback()
             raise ArchivedGiftAlreadyExistsError(gift_id) from exc
         return gift
+
+    async def import_missing(
+        self,
+        gifts: list[ArchivedGiftCatalogItem],
+        *,
+        admin_id: int,
+    ) -> tuple[int, int]:
+        """Import new catalog entries while preserving all existing records."""
+        unique_gifts = {gift.gift_id: gift for gift in gifts}
+        gift_ids = set(unique_gifts)
+        if not gift_ids:
+            return 0, 0
+        result = await self._session.execute(
+            select(ArchivedGift.gift_id).where(ArchivedGift.gift_id.in_(gift_ids))
+        )
+        existing_ids = set(result.scalars().all())
+        new_gifts = [
+            gift
+            for gift in unique_gifts.values()
+            if gift.gift_id not in existing_ids
+        ]
+        self._session.add_all(
+            [
+                ArchivedGift(
+                    gift_id=gift.gift_id,
+                    title=gift.title,
+                    emoji=gift.emoji,
+                    star_count=gift.star_count,
+                    sticker_file_id=None,
+                    is_active=True,
+                    created_by_admin_id=admin_id,
+                )
+                for gift in new_gifts
+            ]
+        )
+        await self._session.commit()
+        return len(new_gifts), len(unique_gifts) - len(new_gifts)
 
     async def update_fields(self, archived_gift_id: int, **values) -> ArchivedGift:
         gift = await self.get(archived_gift_id)

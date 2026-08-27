@@ -48,12 +48,17 @@ from src.services.archived_gift_service import (
     ArchivedGiftAlreadyExistsError,
     ArchivedGiftService,
 )
+from src.services.archived_gift_catalog import (
+    ArchivedGiftCatalogError,
+    fetch_archived_gift_catalog,
+)
 from src.services.telegram_logger import tg_logger
 
 
 logger = logging.getLogger(__name__)
 router = Router(name="admin_gifts")
 _confirmation_locks: dict[int, asyncio.Lock] = {}
+_archive_sync_lock = asyncio.Lock()
 
 TELEGRAM_GIFT_TEXT_LIMIT = 128
 ARCHIVED_GIFT_TITLE_LIMIT = 100
@@ -355,8 +360,8 @@ async def _show_archive_manager(
         state,
         prefix
         + "🗃 <b>Управление архивными подарками</b>\n\n"
-        "Каталог общий для всех администраторов. Цена задаётся вручную и должна "
-        "совпадать с реальной стоимостью подарка в Telegram."
+        "Каталог общий для всех администраторов. Удалённые подарки можно загрузить "
+        "автоматически; уже сохранённые записи импорт не изменяет."
         + empty,
         archived_gift_manage_keyboard(
             gifts,
@@ -1479,6 +1484,53 @@ async def callback_admin_gift_archive_add(
     await _delete_preview(bot, state)
     await state.update_data(archive_draft={})
     await _show_archive_add_id_prompt(bot, state)
+
+
+@router.callback_query(F.data == "admin:gifts:archive:sync")
+async def callback_admin_gift_archive_sync(
+    callback: CallbackQuery, state: FSMContext, bot: Bot
+) -> None:
+    if not await check_admin(callback):
+        return
+    await safe_callback_answer(callback, "Загружаю каталог…")
+    await _edit_controller(
+        bot,
+        state,
+        "🌐 <b>Загрузка удалённых подарков</b>\n\nПроверяю открытый каталог…",
+        None,
+    )
+    try:
+        async with _archive_sync_lock:
+            gifts = await fetch_archived_gift_catalog()
+            async with async_session_factory() as session:
+                imported, preserved = await ArchivedGiftService(
+                    session
+                ).import_missing(gifts, admin_id=callback.from_user.id)
+    except ArchivedGiftCatalogError as exc:
+        logger.warning("Could not synchronize archived Gift catalog: %s", exc)
+        await _show_archive_manager(
+            bot,
+            state,
+            notice=f"❌ <b>{html.escape(str(exc))}</b> Попробуйте позже.",
+        )
+        return
+    except Exception:
+        logger.exception("Unexpected archived Gift catalog synchronization error")
+        await _show_archive_manager(
+            bot,
+            state,
+            notice="❌ <b>Не удалось обновить каталог.</b> Попробуйте позже.",
+        )
+        return
+
+    if imported:
+        notice = (
+            f"✅ <b>Добавлено подарков: {imported}.</b> "
+            f"Уже было в каталоге: {preserved}."
+        )
+    else:
+        notice = f"✅ <b>Каталог уже актуален.</b> Проверено записей: {preserved}."
+    await _show_archive_manager(bot, state, notice=notice)
 
 
 @router.message(AdminGiftStates.waiting_archive_gift_id)
