@@ -15,7 +15,8 @@ from aiogram.types import ErrorEvent
 
 from src.config import get_config
 from src.bot.safe_bot import SafeBot
-from src.db.session import dispose_engine
+from src.db.session import async_session_factory, dispose_engine
+from src.services.archived_gift_service import ArchivedGiftService
 from src.services.telegram_logger import tg_logger, TelegramLogger
 from src.bot.callback_utils import is_stale_callback_error, safe_callback_answer
 from src.locales import get_user_locale, t
@@ -75,6 +76,20 @@ def register_user_middlewares(dp: Dispatcher) -> None:
 async def main() -> None:
     """Запуск бота."""
     config = get_config()
+
+    try:
+        async with async_session_factory() as database_session:
+            catalog_sync = await ArchivedGiftService(
+                database_session
+            ).reconcile_catalog()
+        logger.info(
+            "Retired Gift catalog synchronized: created=%s updated=%s removed=%s",
+            catalog_sync.created,
+            catalog_sync.updated,
+            catalog_sync.removed,
+        )
+    except Exception:
+        logger.exception("Could not synchronize the retired Gift catalog at startup")
 
     # Инициализация очереди
     redis_queue = None

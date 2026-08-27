@@ -21,12 +21,6 @@ def admin_gift_search_keyboard() -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🗃 Архивные подарки",
-                    callback_data="admin:gifts:archive:manage",
-                )
-            ],
-            [
-                InlineKeyboardButton(
                     text="❌ Отмена",
                     callback_data="admin:gifts:cancel",
                 )
@@ -242,219 +236,16 @@ def archived_gift_choose_keyboard(
             )
         buttons.append(navigation)
 
-    buttons.extend(
-        [
-            [
-                InlineKeyboardButton(
-                    text="⚙️ Управление архивом",
-                    callback_data="admin:gifts:archive:manage",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="◀️ Обычные подарки",
-                    callback_data="admin:gifts:catalog",
-                ),
-                InlineKeyboardButton(
-                    text="❌ Отмена",
-                    callback_data="admin:gifts:cancel",
-                ),
-            ],
-        ]
-    )
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def archived_gift_manage_keyboard(
-    gifts: list,
-    page: int = 0,
-    *,
-    has_recipient: bool = False,
-) -> InlineKeyboardMarkup:
-    total_pages = max(1, (len(gifts) + CATALOG_PAGE_SIZE - 1) // CATALOG_PAGE_SIZE)
-    page = max(0, min(page, total_pages - 1))
-    start = page * CATALOG_PAGE_SIZE
-    buttons: list[list[InlineKeyboardButton]] = []
-
-    for gift in gifts[start : start + CATALOG_PAGE_SIZE]:
-        status = "✅" if gift.is_active else "⛔"
-        title = _archived_gift_button_title(gift.title)
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    text=f"{status} {gift.emoji or '🎁'} {title} · {gift.star_count} ⭐",
-                    callback_data=f"admin:gifts:archive:item:{gift.id}",
-                )
-            ]
-        )
-
-    if total_pages > 1:
-        navigation: list[InlineKeyboardButton] = []
-        if page > 0:
-            navigation.append(
-                InlineKeyboardButton(
-                    text="◀",
-                    callback_data=f"admin:gifts:archive:manage:page:{page - 1}",
-                )
-            )
-        navigation.append(
-            InlineKeyboardButton(
-                text=f"{page + 1}/{total_pages}",
-                callback_data="admin:gifts:nop",
-            )
-        )
-        if page + 1 < total_pages:
-            navigation.append(
-                InlineKeyboardButton(
-                    text="▶",
-                    callback_data=f"admin:gifts:archive:manage:page:{page + 1}",
-                )
-            )
-        buttons.append(navigation)
-
     buttons.append(
         [
             InlineKeyboardButton(
-                text="➕ Добавить подарок",
-                callback_data="admin:gifts:archive:add",
-                style="success",
-            )
-        ]
-    )
-    buttons.append(
-        [
-            InlineKeyboardButton(
-                text="🌐 Загрузить удалённые подарки",
-                callback_data="admin:gifts:archive:sync",
-            )
-        ]
-    )
-    if has_recipient:
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    text="🎁 К выбору архивного подарка",
-                    callback_data="admin:gifts:archive:choose",
-                )
-            ]
-        )
-    buttons.append(
-        [
-            InlineKeyboardButton(
-                text="◀️ К получателю",
-                callback_data="admin:gifts:recipient",
+                text="◀️ Обычные подарки",
+                callback_data="admin:gifts:catalog",
             ),
             InlineKeyboardButton(
                 text="❌ Отмена",
                 callback_data="admin:gifts:cancel",
             ),
-        ]
-    )
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def archived_gift_item_keyboard(gift, *, has_recipient: bool) -> InlineKeyboardMarkup:
-    buttons: list[list[InlineKeyboardButton]] = []
-    if gift.is_active and has_recipient:
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    text="🎁 Выбрать для отправки",
-                    callback_data=f"admin:gifts:archive:select:{gift.id}",
-                    style="success",
-                )
-            ]
-        )
-    buttons.extend(
-        [
-            [
-                InlineKeyboardButton(
-                    text="✏️ Название",
-                    callback_data=f"admin:gifts:archive:edit:title:{gift.id}",
-                ),
-                InlineKeyboardButton(
-                    text="⭐ Цена",
-                    callback_data=f"admin:gifts:archive:edit:price:{gift.id}",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="😀 Эмодзи",
-                    callback_data=f"admin:gifts:archive:edit:emoji:{gift.id}",
-                ),
-                InlineKeyboardButton(
-                    text="🖼 Превью",
-                    callback_data=f"admin:gifts:archive:edit:sticker:{gift.id}",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="⛔ Выключить" if gift.is_active else "✅ Включить",
-                    callback_data=(
-                        f"admin:gifts:archive:set:{0 if gift.is_active else 1}:{gift.id}"
-                    ),
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🗑 Удалить",
-                    callback_data=f"admin:gifts:archive:delete:{gift.id}",
-                    style="danger",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="◀️ К списку",
-                    callback_data="admin:gifts:archive:manage",
-                )
-            ],
-        ]
-    )
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def archived_gift_delete_keyboard(gift_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🗑 Удалить безвозвратно",
-                    callback_data=f"admin:gifts:archive:delete:confirm:{gift_id}",
-                    style="danger",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="◀️ Назад",
-                    callback_data=f"admin:gifts:archive:item:{gift_id}",
-                )
-            ],
-        ]
-    )
-
-
-def archived_gift_input_keyboard(
-    back_callback: str,
-    *,
-    optional_callback: str | None = None,
-    optional_text: str = "Пропустить",
-) -> InlineKeyboardMarkup:
-    buttons: list[list[InlineKeyboardButton]] = []
-    if optional_callback:
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    text=optional_text,
-                    callback_data=optional_callback,
-                )
-            ]
-        )
-    buttons.append(
-        [
-            InlineKeyboardButton(
-                text="◀️ Назад",
-                callback_data=back_callback,
-            )
         ]
     )
     return InlineKeyboardMarkup(inline_keyboard=buttons)

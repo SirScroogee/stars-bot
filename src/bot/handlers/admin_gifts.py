@@ -19,10 +19,6 @@ from src.bot.handlers.admin_utils import check_admin, check_admin_message
 from src.bot.keyboards.admin import AdminCallback, get_admin_menu_keyboard
 from src.bot.keyboards.admin_gifts import (
     archived_gift_choose_keyboard,
-    archived_gift_delete_keyboard,
-    archived_gift_input_keyboard,
-    archived_gift_item_keyboard,
-    archived_gift_manage_keyboard,
     admin_gift_catalog_keyboard,
     admin_gift_comment_keyboard,
     admin_gift_confirm_keyboard,
@@ -44,41 +40,21 @@ from src.services.admin_gift_service import (
     GiftInvoiceAlreadyPaidError,
     GiftSendOutcome,
 )
-from src.services.archived_gift_service import (
-    ArchivedGiftAlreadyExistsError,
-    ArchivedGiftService,
-)
-from src.services.archived_gift_catalog import (
-    ArchivedGiftCatalogError,
-    fetch_archived_gift_catalog,
-)
+from src.services.archived_gift_service import ArchivedGiftService
 from src.services.telegram_logger import tg_logger
 
 
 logger = logging.getLogger(__name__)
 router = Router(name="admin_gifts")
 _confirmation_locks: dict[int, asyncio.Lock] = {}
-_archive_sync_lock = asyncio.Lock()
+_archive_catalog_lock = asyncio.Lock()
 
 TELEGRAM_GIFT_TEXT_LIMIT = 128
-ARCHIVED_GIFT_TITLE_LIMIT = 100
-ARCHIVED_GIFT_EMOJI_LIMIT = 32
-ARCHIVED_GIFT_MAX_ID = 2**63 - 1
-ARCHIVED_GIFT_MAX_PRICE = 1_000_000_000
 
 
 class AdminGiftStates(StatesGroup):
     waiting_recipient = State()
     waiting_comment = State()
-    waiting_archive_gift_id = State()
-    waiting_archive_title = State()
-    waiting_archive_star_count = State()
-    waiting_archive_emoji = State()
-    waiting_archive_sticker = State()
-    waiting_archive_edit_title = State()
-    waiting_archive_edit_star_count = State()
-    waiting_archive_edit_emoji = State()
-    waiting_archive_edit_sticker = State()
 
 
 def telegram_text_length(value: str) -> int:
@@ -140,50 +116,6 @@ def _serialize_archived_gift(gift: ArchivedGift) -> dict:
         "remaining_count": None,
         "sticker_file_id": gift.sticker_file_id,
     }
-
-
-def validate_archived_gift_id(value: str) -> str:
-    gift_id = value.strip()
-    if not gift_id.isascii() or not gift_id.isdigit():
-        raise ValueError("ID должен состоять только из цифр.")
-    parsed = int(gift_id)
-    if parsed <= 0 or parsed > ARCHIVED_GIFT_MAX_ID:
-        raise ValueError("ID находится вне допустимого диапазона Telegram.")
-    return str(parsed)
-
-
-def validate_archived_gift_title(value: str) -> str:
-    title = value.strip()
-    if not title:
-        raise ValueError("Название не может быть пустым.")
-    if len(title) > ARCHIVED_GIFT_TITLE_LIMIT:
-        raise ValueError(
-            f"Название должно быть не длиннее {ARCHIVED_GIFT_TITLE_LIMIT} символов."
-        )
-    return title
-
-
-def validate_archived_gift_price(value: str) -> int:
-    raw = value.strip()
-    if not raw.isascii() or not raw.isdigit():
-        raise ValueError("Стоимость должна быть целым числом Stars.")
-    price = int(raw)
-    if price <= 0 or price > ARCHIVED_GIFT_MAX_PRICE:
-        raise ValueError(
-            f"Стоимость должна быть от 1 до {ARCHIVED_GIFT_MAX_PRICE:,} Stars."
-        )
-    return price
-
-
-def validate_archived_gift_emoji(value: str) -> str:
-    emoji = value.strip()
-    if not emoji:
-        raise ValueError("Эмодзи не может быть пустым.")
-    if len(emoji) > ARCHIVED_GIFT_EMOJI_LIMIT:
-        raise ValueError(
-            f"Эмодзи должно быть не длиннее {ARCHIVED_GIFT_EMOJI_LIMIT} символов."
-        )
-    return emoji
 
 
 def _available_gift_dicts(gifts) -> list[dict]:
@@ -274,8 +206,11 @@ async def _get_bot_star_balance(bot: Bot):
 
 
 async def _list_archived_gifts(*, active_only: bool = False) -> list[ArchivedGift]:
-    async with async_session_factory() as session:
-        return await ArchivedGiftService(session).list_gifts(active_only=active_only)
+    async with _archive_catalog_lock:
+        async with async_session_factory() as session:
+            service = ArchivedGiftService(session)
+            await service.reconcile_catalog()
+            return await service.list_gifts(active_only=active_only)
 
 
 async def _get_archived_gift(archived_gift_id: int) -> ArchivedGift | None:
@@ -335,282 +270,10 @@ async def _show_archived_choose(
         prefix
         + "🗃 <b>Архивные подарки</b>\n\n"
         f"👤 Получатель: <b>{html.escape(_recipient_name(data))}</b>\n\n"
-        "Эти подарки отправляются по сохранённому ID и могут быть отклонены Telegram."
+        "Список поддерживается автоматически и содержит только снятые с продажи "
+        "неулучшаемые сезонные подарки. Telegram проверит доступность при отправке."
         + empty,
         archived_gift_choose_keyboard(gifts, page),
-    )
-
-
-async def _show_archive_manager(
-    bot: Bot,
-    state: FSMContext,
-    *,
-    page: int = 0,
-    notice: str | None = None,
-) -> None:
-    await _delete_preview(bot, state)
-    await state.set_state(None)
-    await state.update_data(archive_draft=None, archive_edit_id=None)
-    data = await state.get_data()
-    gifts = await _list_archived_gifts()
-    prefix = f"{notice}\n\n" if notice else ""
-    empty = "\n\n<i>Каталог пока пуст.</i>" if not gifts else ""
-    await _edit_controller(
-        bot,
-        state,
-        prefix
-        + "🗃 <b>Управление архивными подарками</b>\n\n"
-        "Каталог общий для всех администраторов. Удалённые подарки можно загрузить "
-        "автоматически; уже сохранённые записи импорт не изменяет."
-        + empty,
-        archived_gift_manage_keyboard(
-            gifts,
-            page,
-            has_recipient=bool(data.get("recipient_id")),
-        ),
-    )
-
-
-async def _show_archive_item(
-    bot: Bot,
-    state: FSMContext,
-    archived_gift_id: int,
-    *,
-    notice: str | None = None,
-) -> None:
-    await _delete_preview(bot, state)
-    gift = await _get_archived_gift(archived_gift_id)
-    if gift is None:
-        await _show_archive_manager(
-            bot,
-            state,
-            notice="❌ <b>Архивный подарок больше не существует.</b>",
-        )
-        return
-    await state.set_state(None)
-    await state.update_data(archive_edit_id=None)
-    data = await state.get_data()
-    prefix = f"{notice}\n\n" if notice else ""
-    status = "✅ Включён" if gift.is_active else "⛔ Выключен"
-    preview = "настроено" if gift.sticker_file_id else "нет"
-    await _edit_controller(
-        bot,
-        state,
-        prefix
-        + "🗃 <b>Архивный подарок</b>\n\n"
-        f"Название: <b>{html.escape(gift.title)}</b>\n"
-        f"Эмодзи: {html.escape(gift.emoji or '🎁')}\n"
-        f"Gift ID: <code>{html.escape(gift.gift_id)}</code>\n"
-        f"Стоимость: <b>{gift.star_count:,} Stars</b>\n"
-        f"Превью: <b>{preview}</b>\n"
-        f"Статус: <b>{status}</b>\n\n"
-        "Telegram не предоставляет безопасную проверку архивного ID без попытки покупки.",
-        archived_gift_item_keyboard(
-            gift,
-            has_recipient=bool(data.get("recipient_id")),
-        ),
-    )
-    if gift.sticker_file_id:
-        try:
-            preview_message = await bot.send_sticker(
-                chat_id=data["controller_chat_id"],
-                sticker=gift.sticker_file_id,
-            )
-            await state.update_data(gift_preview_message_id=preview_message.message_id)
-        except Exception as exc:
-            logger.info("Could not show archived Gift preview: %s", exc)
-
-
-async def _show_archive_edit_prompt(
-    bot: Bot,
-    state: FSMContext,
-    archived_gift_id: int,
-    field: str,
-    *,
-    error: str | None = None,
-) -> None:
-    gift = await _get_archived_gift(archived_gift_id)
-    if gift is None:
-        await _show_archive_manager(
-            bot,
-            state,
-            notice="❌ <b>Подарок был удалён другим администратором.</b>",
-        )
-        return
-    state_map = {
-        "title": AdminGiftStates.waiting_archive_edit_title,
-        "price": AdminGiftStates.waiting_archive_edit_star_count,
-        "emoji": AdminGiftStates.waiting_archive_edit_emoji,
-        "sticker": AdminGiftStates.waiting_archive_edit_sticker,
-    }
-    prompt_map = {
-        "title": "Отправьте новое название.",
-        "price": "Отправьте новую стоимость целым числом Stars.",
-        "emoji": "Отправьте новое эмодзи.",
-        "sticker": "Отправьте новый стикер для превью.",
-    }
-    if field not in state_map:
-        raise ValueError(f"Unknown archived Gift edit field: {field}")
-    await state.update_data(archive_edit_id=gift.id)
-    await state.set_state(state_map[field])
-    prefix = f"❌ <b>{html.escape(error)}</b>\n\n" if error else ""
-    await _edit_controller(
-        bot,
-        state,
-        prefix
-        + f"✏️ <b>Редактирование: {html.escape(gift.title)}</b>\n\n"
-        + prompt_map[field],
-        archived_gift_input_keyboard(
-            f"admin:gifts:archive:item:{gift.id}",
-            optional_callback=(
-                f"admin:gifts:archive:edit:sticker:clear:{gift.id}"
-                if field == "sticker"
-                else None
-            ),
-            optional_text="Убрать превью",
-        ),
-    )
-
-
-async def _show_archive_add_id_prompt(
-    bot: Bot, state: FSMContext, *, error: str | None = None
-) -> None:
-    await state.set_state(AdminGiftStates.waiting_archive_gift_id)
-    prefix = f"❌ <b>{html.escape(error)}</b>\n\n" if error else ""
-    await _edit_controller(
-        bot,
-        state,
-        prefix
-        + "➕ <b>Новый архивный подарок · шаг 1/5</b>\n\n"
-        "Отправьте числовой <code>gift_id</code>. ID нельзя будет изменить после создания.",
-        archived_gift_input_keyboard("admin:gifts:archive:manage"),
-    )
-
-
-async def _show_archive_add_title_prompt(
-    bot: Bot, state: FSMContext, *, error: str | None = None
-) -> None:
-    await state.set_state(AdminGiftStates.waiting_archive_title)
-    prefix = f"❌ <b>{html.escape(error)}</b>\n\n" if error else ""
-    await _edit_controller(
-        bot,
-        state,
-        prefix
-        + "➕ <b>Новый архивный подарок · шаг 2/5</b>\n\n"
-        "Отправьте понятное название подарка.",
-        archived_gift_input_keyboard("admin:gifts:archive:add:back:id"),
-    )
-
-
-async def _show_archive_add_price_prompt(
-    bot: Bot, state: FSMContext, *, error: str | None = None
-) -> None:
-    await state.set_state(AdminGiftStates.waiting_archive_star_count)
-    prefix = f"❌ <b>{html.escape(error)}</b>\n\n" if error else ""
-    await _edit_controller(
-        bot,
-        state,
-        prefix
-        + "➕ <b>Новый архивный подарок · шаг 3/5</b>\n\n"
-        "Отправьте исходную стоимость подарка целым числом Telegram Stars.\n\n"
-        "<b>Важно:</b> Telegram не сообщает цену скрытого подарка до попытки отправки.",
-        archived_gift_input_keyboard("admin:gifts:archive:add:back:title"),
-    )
-
-
-async def _show_archive_add_emoji_prompt(
-    bot: Bot, state: FSMContext, *, error: str | None = None
-) -> None:
-    await state.set_state(AdminGiftStates.waiting_archive_emoji)
-    prefix = f"❌ <b>{html.escape(error)}</b>\n\n" if error else ""
-    await _edit_controller(
-        bot,
-        state,
-        prefix
-        + "➕ <b>Новый архивный подарок · шаг 4/5</b>\n\n"
-        "Отправьте эмодзи для кнопки и сообщений.",
-        archived_gift_input_keyboard(
-            "admin:gifts:archive:add:back:price",
-            optional_callback="admin:gifts:archive:add:emoji:default",
-            optional_text="🎁 Использовать 🎁",
-        ),
-    )
-
-
-async def _show_archive_add_sticker_prompt(
-    bot: Bot, state: FSMContext, *, error: str | None = None
-) -> None:
-    await state.set_state(AdminGiftStates.waiting_archive_sticker)
-    prefix = f"❌ <b>{html.escape(error)}</b>\n\n" if error else ""
-    await _edit_controller(
-        bot,
-        state,
-        prefix
-        + "➕ <b>Новый архивный подарок · шаг 5/5</b>\n\n"
-        "Отправьте стикер для превью или пропустите этот шаг.",
-        archived_gift_input_keyboard(
-            "admin:gifts:archive:add:back:emoji",
-            optional_callback="admin:gifts:archive:add:sticker:skip",
-            optional_text="Без превью",
-        ),
-    )
-
-
-async def _create_archived_gift_from_draft(
-    bot: Bot,
-    state: FSMContext,
-    *,
-    admin_id: int,
-    admin_username: str | None,
-    sticker_file_id: str | None,
-) -> None:
-    data = await state.get_data()
-    draft = data.get("archive_draft") or {}
-    required = {"gift_id", "title", "star_count", "emoji"}
-    if not required.issubset(draft):
-        await _show_archive_add_id_prompt(
-            bot,
-            state,
-            error="Черновик устарел. Заполните подарок заново.",
-        )
-        return
-    try:
-        async with async_session_factory() as session:
-            gift = await ArchivedGiftService(session).create(
-                gift_id=draft["gift_id"],
-                title=draft["title"],
-                emoji=draft["emoji"],
-                star_count=draft["star_count"],
-                sticker_file_id=sticker_file_id,
-                admin_id=admin_id,
-            )
-    except ArchivedGiftAlreadyExistsError:
-        await _show_archive_add_id_prompt(
-            bot,
-            state,
-            error="Подарок с таким Gift ID уже есть в архиве.",
-        )
-        return
-    await state.update_data(archive_draft=None)
-    try:
-        await tg_logger.log_admin_action(
-            admin_id=admin_id,
-            admin_username=admin_username,
-            action="Добавлен архивный Telegram Gift",
-            details=(
-                f"Запись: #{gift.id}\n"
-                f"Название: {html.escape(gift.title)}\n"
-                f"Gift ID: {html.escape(gift.gift_id)}\n"
-                f"Цена: {gift.star_count} Stars"
-            ),
-        )
-    except Exception as exc:
-        logger.error("Could not log archived Gift creation: %s", exc)
-    await _show_archive_item(
-        bot,
-        state,
-        gift.id,
-        notice="✅ <b>Архивный подарок добавлен.</b>",
     )
 
 
@@ -771,8 +434,9 @@ async def _show_selected(bot: Bot, state: FSMContext) -> None:
         else ""
     )
     archive_warning = (
-        "\n\n⚠️ <b>Архивный ID не входит в текущий каталог Telegram.</b> "
-        "Цена указана вручную, а доступность будет известна только при отправке."
+        "\n\n⚠️ <b>Сезонный подарок снят с продажи.</b> "
+        "Он отсутствует в текущем каталоге Telegram; окончательная доступность "
+        "проверяется при отправке."
         if archived
         else ""
     )
@@ -1385,26 +1049,6 @@ async def callback_admin_gifts(
     await safe_callback_answer(callback)
 
 
-@router.callback_query(F.data == "admin:gifts:archive:manage")
-async def callback_admin_gift_archive_manage(
-    callback: CallbackQuery, state: FSMContext, bot: Bot
-) -> None:
-    if not await check_admin(callback):
-        return
-    await safe_callback_answer(callback)
-    await _show_archive_manager(bot, state)
-
-
-@router.callback_query(F.data.regexp(r"^admin:gifts:archive:manage:page:\d+$"))
-async def callback_admin_gift_archive_manage_page(
-    callback: CallbackQuery, state: FSMContext, bot: Bot
-) -> None:
-    if not await check_admin(callback):
-        return
-    await safe_callback_answer(callback)
-    await _show_archive_manager(bot, state, page=int(callback.data.rsplit(":", 1)[-1]))
-
-
 @router.callback_query(F.data == "admin:gifts:archive:choose")
 async def callback_admin_gift_archive_choose(
     callback: CallbackQuery, state: FSMContext, bot: Bot
@@ -1464,555 +1108,25 @@ async def callback_admin_gift_archive_select(
     await _show_selected(bot, state)
 
 
-@router.callback_query(F.data.regexp(r"^admin:gifts:archive:item:\d+$"))
-async def callback_admin_gift_archive_item(
-    callback: CallbackQuery, state: FSMContext, bot: Bot
-) -> None:
-    if not await check_admin(callback):
-        return
-    await safe_callback_answer(callback)
-    await _show_archive_item(bot, state, int(callback.data.rsplit(":", 1)[-1]))
-
-
-@router.callback_query(F.data == "admin:gifts:archive:add")
-async def callback_admin_gift_archive_add(
-    callback: CallbackQuery, state: FSMContext, bot: Bot
-) -> None:
-    if not await check_admin(callback):
-        return
-    await safe_callback_answer(callback)
-    await _delete_preview(bot, state)
-    await state.update_data(archive_draft={})
-    await _show_archive_add_id_prompt(bot, state)
-
-
-@router.callback_query(F.data == "admin:gifts:archive:sync")
-async def callback_admin_gift_archive_sync(
-    callback: CallbackQuery, state: FSMContext, bot: Bot
-) -> None:
-    if not await check_admin(callback):
-        return
-    await safe_callback_answer(callback, "Загружаю каталог…")
-    await _edit_controller(
-        bot,
-        state,
-        "🌐 <b>Загрузка удалённых подарков</b>\n\nПроверяю открытый каталог…",
-        None,
-    )
-    try:
-        async with _archive_sync_lock:
-            gifts = await fetch_archived_gift_catalog()
-            async with async_session_factory() as session:
-                imported, preserved = await ArchivedGiftService(
-                    session
-                ).import_missing(gifts, admin_id=callback.from_user.id)
-    except ArchivedGiftCatalogError as exc:
-        logger.warning("Could not synchronize archived Gift catalog: %s", exc)
-        await _show_archive_manager(
-            bot,
-            state,
-            notice=f"❌ <b>{html.escape(str(exc))}</b> Попробуйте позже.",
-        )
-        return
-    except Exception:
-        logger.exception("Unexpected archived Gift catalog synchronization error")
-        await _show_archive_manager(
-            bot,
-            state,
-            notice="❌ <b>Не удалось обновить каталог.</b> Попробуйте позже.",
-        )
-        return
-
-    if imported:
-        notice = (
-            f"✅ <b>Добавлено подарков: {imported}.</b> "
-            f"Уже было в каталоге: {preserved}."
-        )
-    else:
-        notice = f"✅ <b>Каталог уже актуален.</b> Проверено записей: {preserved}."
-    await _show_archive_manager(bot, state, notice=notice)
-
-
-@router.message(AdminGiftStates.waiting_archive_gift_id)
-async def message_admin_gift_archive_id(
-    message: Message, state: FSMContext, bot: Bot
-) -> None:
-    if not await check_admin_message(message):
-        return
-    await _delete_admin_input(message)
-    try:
-        gift_id = validate_archived_gift_id(message.text or "")
-    except ValueError as exc:
-        await _show_archive_add_id_prompt(bot, state, error=str(exc))
-        return
-    async with async_session_factory() as session:
-        existing = await ArchivedGiftService(session).get_by_gift_id(gift_id)
-    if existing is not None:
-        await _show_archive_add_id_prompt(
-            bot,
-            state,
-            error=f"Gift ID уже сохранён как «{existing.title}».",
-        )
-        return
-    data = await state.get_data()
-    draft = dict(data.get("archive_draft") or {})
-    draft["gift_id"] = gift_id
-    await state.update_data(archive_draft=draft)
-    await _show_archive_add_title_prompt(bot, state)
-
-
-@router.message(AdminGiftStates.waiting_archive_title)
-async def message_admin_gift_archive_title(
-    message: Message, state: FSMContext, bot: Bot
-) -> None:
-    if not await check_admin_message(message):
-        return
-    await _delete_admin_input(message)
-    try:
-        title = validate_archived_gift_title(message.text or "")
-    except ValueError as exc:
-        await _show_archive_add_title_prompt(bot, state, error=str(exc))
-        return
-    data = await state.get_data()
-    draft = dict(data.get("archive_draft") or {})
-    draft["title"] = title
-    await state.update_data(archive_draft=draft)
-    await _show_archive_add_price_prompt(bot, state)
-
-
-@router.message(AdminGiftStates.waiting_archive_star_count)
-async def message_admin_gift_archive_price(
-    message: Message, state: FSMContext, bot: Bot
-) -> None:
-    if not await check_admin_message(message):
-        return
-    await _delete_admin_input(message)
-    try:
-        price = validate_archived_gift_price(message.text or "")
-    except ValueError as exc:
-        await _show_archive_add_price_prompt(bot, state, error=str(exc))
-        return
-    data = await state.get_data()
-    draft = dict(data.get("archive_draft") or {})
-    draft["star_count"] = price
-    await state.update_data(archive_draft=draft)
-    await _show_archive_add_emoji_prompt(bot, state)
-
-
-@router.message(AdminGiftStates.waiting_archive_emoji)
-async def message_admin_gift_archive_emoji(
-    message: Message, state: FSMContext, bot: Bot
-) -> None:
-    if not await check_admin_message(message):
-        return
-    await _delete_admin_input(message)
-    try:
-        emoji = validate_archived_gift_emoji(message.text or "")
-    except ValueError as exc:
-        await _show_archive_add_emoji_prompt(bot, state, error=str(exc))
-        return
-    data = await state.get_data()
-    draft = dict(data.get("archive_draft") or {})
-    draft["emoji"] = emoji
-    await state.update_data(archive_draft=draft)
-    await _show_archive_add_sticker_prompt(bot, state)
-
-
-@router.message(AdminGiftStates.waiting_archive_sticker)
-async def message_admin_gift_archive_sticker(
-    message: Message, state: FSMContext, bot: Bot
-) -> None:
-    if not await check_admin_message(message):
-        return
-    await _delete_admin_input(message)
-    if message.sticker is None:
-        await _show_archive_add_sticker_prompt(
-            bot,
-            state,
-            error="Нужно отправить стикер или нажать «Без превью».",
-        )
-        return
-    await _create_archived_gift_from_draft(
-        bot,
-        state,
-        admin_id=message.from_user.id,
-        admin_username=message.from_user.username,
-        sticker_file_id=message.sticker.file_id,
-    )
-
-
-@router.callback_query(F.data == "admin:gifts:archive:add:emoji:default")
-async def callback_admin_gift_archive_default_emoji(
-    callback: CallbackQuery, state: FSMContext, bot: Bot
-) -> None:
-    if not await check_admin(callback):
-        return
-    await safe_callback_answer(callback)
-    data = await state.get_data()
-    draft = dict(data.get("archive_draft") or {})
-    draft["emoji"] = "🎁"
-    await state.update_data(archive_draft=draft)
-    await _show_archive_add_sticker_prompt(bot, state)
-
-
-@router.callback_query(F.data == "admin:gifts:archive:add:sticker:skip")
-async def callback_admin_gift_archive_skip_sticker(
-    callback: CallbackQuery, state: FSMContext, bot: Bot
-) -> None:
-    if not await check_admin(callback):
-        return
-    await safe_callback_answer(callback, "Сохраняю…")
-    await _create_archived_gift_from_draft(
-        bot,
-        state,
-        admin_id=callback.from_user.id,
-        admin_username=callback.from_user.username,
-        sticker_file_id=None,
-    )
-
-
 @router.callback_query(
-    F.data.in_(
-        {
-            "admin:gifts:archive:add:back:id",
-            "admin:gifts:archive:add:back:title",
-            "admin:gifts:archive:add:back:price",
-            "admin:gifts:archive:add:back:emoji",
-        }
-    )
+    F.data.regexp(r"^admin:gifts:archive:(manage|add|sync|item|edit|delete|set)")
 )
-async def callback_admin_gift_archive_add_back(
+async def callback_admin_gift_archive_legacy_action(
     callback: CallbackQuery, state: FSMContext, bot: Bot
 ) -> None:
+    """Redirect buttons left in old admin messages to the automatic catalog."""
     if not await check_admin(callback):
         return
-    await safe_callback_answer(callback)
-    target = callback.data.rsplit(":", 1)[-1]
-    prompts = {
-        "id": _show_archive_add_id_prompt,
-        "title": _show_archive_add_title_prompt,
-        "price": _show_archive_add_price_prompt,
-        "emoji": _show_archive_add_emoji_prompt,
-    }
-    await prompts[target](bot, state)
-
-
-@router.callback_query(F.data.regexp(r"^admin:gifts:archive:set:[01]:\d+$"))
-async def callback_admin_gift_archive_set_active(
-    callback: CallbackQuery, state: FSMContext, bot: Bot
-) -> None:
-    if not await check_admin(callback):
-        return
-    parts = callback.data.split(":")
-    is_active = parts[-2] == "1"
-    archived_gift_id = int(parts[-1])
-    await safe_callback_answer(
-        callback,
-        "Включаю…" if is_active else "Выключаю…",
-    )
-    try:
-        async with async_session_factory() as session:
-            gift = await ArchivedGiftService(session).set_active(
-                archived_gift_id,
-                is_active=is_active,
-            )
-    except LookupError:
-        await _show_archive_manager(
-            bot,
-            state,
-            notice="❌ <b>Подарок уже удалён.</b>",
-        )
-        return
-    try:
-        await tg_logger.log_admin_action(
-            admin_id=callback.from_user.id,
-            admin_username=callback.from_user.username,
-            action=(
-                "Включён архивный Telegram Gift"
-                if gift.is_active
-                else "Выключен архивный Telegram Gift"
-            ),
-            details=(
-                f"Название: {html.escape(gift.title)}\n"
-                f"Gift ID: {html.escape(gift.gift_id)}"
-            ),
-        )
-    except Exception as exc:
-        logger.error("Could not log archived Gift status change: %s", exc)
-    await _show_archive_item(
-        bot,
-        state,
-        gift.id,
-        notice="✅ <b>Статус архивного подарка изменён.</b>",
-    )
-
-
-@router.callback_query(F.data.regexp(r"^admin:gifts:archive:delete:\d+$"))
-async def callback_admin_gift_archive_delete(
-    callback: CallbackQuery, state: FSMContext, bot: Bot
-) -> None:
-    if not await check_admin(callback):
-        return
-    await safe_callback_answer(callback)
-    archived_gift_id = int(callback.data.rsplit(":", 1)[-1])
-    gift = await _get_archived_gift(archived_gift_id)
-    if gift is None:
-        await _show_archive_manager(bot, state)
-        return
-    await _delete_preview(bot, state)
-    await _edit_controller(
-        bot,
-        state,
-        "🗑 <b>Удалить архивный подарок?</b>\n\n"
-        f"{html.escape(gift.emoji or '🎁')} <b>{html.escape(gift.title)}</b>\n"
-        f"Gift ID: <code>{html.escape(gift.gift_id)}</code>\n\n"
-        "Сохранённые операции отправки останутся в журнале.",
-        archived_gift_delete_keyboard(gift.id),
-    )
-
-
-@router.callback_query(F.data.regexp(r"^admin:gifts:archive:delete:confirm:\d+$"))
-async def callback_admin_gift_archive_delete_confirm(
-    callback: CallbackQuery, state: FSMContext, bot: Bot
-) -> None:
-    if not await check_admin(callback):
-        return
-    await safe_callback_answer(callback, "Удаляю…")
-    archived_gift_id = int(callback.data.rsplit(":", 1)[-1])
-    try:
-        async with async_session_factory() as session:
-            gift = await ArchivedGiftService(session).delete(archived_gift_id)
-    except LookupError:
-        gift = None
-    if gift is not None:
-        try:
-            await tg_logger.log_admin_action(
-                admin_id=callback.from_user.id,
-                admin_username=callback.from_user.username,
-                action="Удалён архивный Telegram Gift",
-                details=(
-                    f"Название: {html.escape(gift.title)}\n"
-                    f"Gift ID: {html.escape(gift.gift_id)}"
-                ),
-            )
-        except Exception as exc:
-            logger.error("Could not log archived Gift deletion: %s", exc)
-    await _show_archive_manager(
-        bot,
-        state,
-        notice="✅ <b>Архивный подарок удалён.</b>",
-    )
-
-
-@router.callback_query(
-    F.data.regexp(r"^admin:gifts:archive:edit:(title|price|emoji|sticker):\d+$")
-)
-async def callback_admin_gift_archive_edit(
-    callback: CallbackQuery, state: FSMContext, bot: Bot
-) -> None:
-    if not await check_admin(callback):
-        return
-    await safe_callback_answer(callback)
-    parts = callback.data.split(":")
-    field = parts[-2]
-    archived_gift_id = int(parts[-1])
-    await _delete_preview(bot, state)
-    await _show_archive_edit_prompt(bot, state, archived_gift_id, field)
-
-
-async def _save_archived_gift_edit(
-    state: FSMContext,
-    bot: Bot,
-    *,
-    admin_id: int,
-    admin_username: str | None,
-    **values,
-) -> None:
+    await safe_callback_answer(callback, "Каталог теперь обновляется автоматически")
     data = await state.get_data()
-    archived_gift_id = data.get("archive_edit_id")
-    if not archived_gift_id:
-        await _show_archive_manager(
-            bot,
-            state,
-            notice="❌ <b>Сессия редактирования устарела.</b>",
-        )
+    if data.get("recipient_id"):
+        await _show_archived_choose(bot, state)
         return
-    try:
-        async with async_session_factory() as session:
-            gift = await ArchivedGiftService(session).update_fields(
-                archived_gift_id,
-                **values,
-            )
-    except LookupError:
-        await _show_archive_manager(
-            bot,
-            state,
-            notice="❌ <b>Подарок был удалён другим администратором.</b>",
-        )
-        return
-    field_labels = {
-        "title": "Название",
-        "emoji": "Эмодзи",
-        "star_count": "Стоимость",
-        "sticker_file_id": "Превью",
-    }
-    changes: list[str] = []
-    for field, value in values.items():
-        if field == "sticker_file_id":
-            rendered = "установлено" if value else "удалено"
-        elif field == "star_count":
-            rendered = f"{value} Stars"
-        else:
-            rendered = html.escape(str(value))
-        changes.append(f"{field_labels.get(field, field)}: {rendered}")
-    try:
-        await tg_logger.log_admin_action(
-            admin_id=admin_id,
-            admin_username=admin_username,
-            action="Изменён архивный Telegram Gift",
-            details=(
-                f"Название: {html.escape(gift.title)}\n"
-                f"Gift ID: {html.escape(gift.gift_id)}\n"
-                + "\n".join(changes)
-            ),
-        )
-    except Exception as exc:
-        logger.error("Could not log archived Gift edit: %s", exc)
-    await _show_archive_item(
+    await _start_recipient_search(
         bot,
         state,
-        gift.id,
-        notice="✅ <b>Изменения сохранены.</b>",
-    )
-
-
-@router.message(AdminGiftStates.waiting_archive_edit_title)
-async def message_admin_gift_archive_edit_title(
-    message: Message, state: FSMContext, bot: Bot
-) -> None:
-    if not await check_admin_message(message):
-        return
-    await _delete_admin_input(message)
-    try:
-        value = validate_archived_gift_title(message.text or "")
-    except ValueError as exc:
-        data = await state.get_data()
-        await _show_archive_edit_prompt(
-            bot,
-            state,
-            int(data.get("archive_edit_id") or 0),
-            "title",
-            error=str(exc),
-        )
-        return
-    await _save_archived_gift_edit(
-        state,
-        bot,
-        admin_id=message.from_user.id,
-        admin_username=message.from_user.username,
-        title=value,
-    )
-
-
-@router.message(AdminGiftStates.waiting_archive_edit_star_count)
-async def message_admin_gift_archive_edit_price(
-    message: Message, state: FSMContext, bot: Bot
-) -> None:
-    if not await check_admin_message(message):
-        return
-    await _delete_admin_input(message)
-    try:
-        value = validate_archived_gift_price(message.text or "")
-    except ValueError as exc:
-        data = await state.get_data()
-        await _show_archive_edit_prompt(
-            bot,
-            state,
-            int(data.get("archive_edit_id") or 0),
-            "price",
-            error=str(exc),
-        )
-        return
-    await _save_archived_gift_edit(
-        state,
-        bot,
-        admin_id=message.from_user.id,
-        admin_username=message.from_user.username,
-        star_count=value,
-    )
-
-
-@router.message(AdminGiftStates.waiting_archive_edit_emoji)
-async def message_admin_gift_archive_edit_emoji(
-    message: Message, state: FSMContext, bot: Bot
-) -> None:
-    if not await check_admin_message(message):
-        return
-    await _delete_admin_input(message)
-    try:
-        value = validate_archived_gift_emoji(message.text or "")
-    except ValueError as exc:
-        data = await state.get_data()
-        await _show_archive_edit_prompt(
-            bot,
-            state,
-            int(data.get("archive_edit_id") or 0),
-            "emoji",
-            error=str(exc),
-        )
-        return
-    await _save_archived_gift_edit(
-        state,
-        bot,
-        admin_id=message.from_user.id,
-        admin_username=message.from_user.username,
-        emoji=value,
-    )
-
-
-@router.message(AdminGiftStates.waiting_archive_edit_sticker)
-async def message_admin_gift_archive_edit_sticker(
-    message: Message, state: FSMContext, bot: Bot
-) -> None:
-    if not await check_admin_message(message):
-        return
-    await _delete_admin_input(message)
-    if message.sticker is None:
-        data = await state.get_data()
-        await _show_archive_edit_prompt(
-            bot,
-            state,
-            int(data.get("archive_edit_id") or 0),
-            "sticker",
-            error="Отправьте стикер или нажмите «Убрать превью».",
-        )
-        return
-    await _save_archived_gift_edit(
-        state,
-        bot,
-        admin_id=message.from_user.id,
-        admin_username=message.from_user.username,
-        sticker_file_id=message.sticker.file_id,
-    )
-
-
-@router.callback_query(
-    F.data.regexp(r"^admin:gifts:archive:edit:sticker:clear:\d+$")
-)
-async def callback_admin_gift_archive_edit_sticker_clear(
-    callback: CallbackQuery, state: FSMContext, bot: Bot
-) -> None:
-    if not await check_admin(callback):
-        return
-    await safe_callback_answer(callback, "Удаляю превью…")
-    archived_gift_id = int(callback.data.rsplit(":", 1)[-1])
-    await state.update_data(archive_edit_id=archived_gift_id)
-    await _save_archived_gift_edit(
-        state,
-        bot,
-        admin_id=callback.from_user.id,
-        admin_username=callback.from_user.username,
-        sticker_file_id=None,
+        chat_id=callback.message.chat.id,
+        message_id=callback.message.message_id,
     )
 
 

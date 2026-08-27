@@ -1,18 +1,25 @@
-"""CRUD operations for administrator-managed archived Telegram Gifts."""
+"""Access and reconciliation for the built-in retired Telegram Gift catalog."""
+
 from __future__ import annotations
 
-from datetime import datetime
+from dataclasses import dataclass
+from typing import Iterable
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import ArchivedGift
-from src.services.archived_gift_catalog import ArchivedGiftCatalogItem
+from src.services.archived_gift_catalog import (
+    RETIRED_GIFT_CATALOG,
+    ArchivedGiftCatalogItem,
+)
 
 
-class ArchivedGiftAlreadyExistsError(ValueError):
-    """The Telegram gift ID is already present in the archived catalog."""
+@dataclass(frozen=True, slots=True)
+class ArchivedGiftCatalogSyncResult:
+    created: int
+    updated: int
+    removed: int
 
 
 class ArchivedGiftService:
@@ -24,11 +31,7 @@ class ArchivedGiftService:
         if active_only:
             query = query.where(ArchivedGift.is_active.is_(True))
         result = await self._session.execute(
-            query.order_by(
-                ArchivedGift.is_active.desc(),
-                ArchivedGift.title,
-                ArchivedGift.id,
-            )
+            query.order_by(ArchivedGift.title, ArchivedGift.id)
         )
         return list(result.scalars().all())
 
@@ -44,99 +47,60 @@ class ArchivedGiftService:
         )
         return result.scalar_one_or_none()
 
-    async def create(
+    async def reconcile_catalog(
         self,
-        *,
-        gift_id: str,
-        title: str,
-        emoji: str | None,
-        star_count: int,
-        sticker_file_id: str | None,
-        admin_id: int,
-    ) -> ArchivedGift:
-        gift = ArchivedGift(
-            gift_id=gift_id,
-            title=title,
-            emoji=emoji,
-            star_count=star_count,
-            sticker_file_id=sticker_file_id,
-            is_active=True,
-            created_by_admin_id=admin_id,
-        )
-        self._session.add(gift)
-        try:
-            await self._session.commit()
-        except IntegrityError as exc:
-            await self._session.rollback()
-            raise ArchivedGiftAlreadyExistsError(gift_id) from exc
-        return gift
+        gifts: Iterable[ArchivedGiftCatalogItem] = RETIRED_GIFT_CATALOG,
+    ) -> ArchivedGiftCatalogSyncResult:
+        """Make the database exactly match the curated built-in catalog."""
+        catalog = {gift.gift_id: gift for gift in gifts}
+        result = await self._session.execute(select(ArchivedGift))
+        existing = list(result.scalars().all())
+        existing_by_gift_id = {gift.gift_id: gift for gift in existing}
 
-    async def import_missing(
-        self,
-        gifts: list[ArchivedGiftCatalogItem],
-        *,
-        admin_id: int,
-    ) -> tuple[int, int]:
-        """Import new catalog entries while preserving all existing records."""
-        unique_gifts = {gift.gift_id: gift for gift in gifts}
-        gift_ids = set(unique_gifts)
-        if not gift_ids:
-            return 0, 0
-        result = await self._session.execute(
-            select(ArchivedGift.gift_id).where(ArchivedGift.gift_id.in_(gift_ids))
-        )
-        existing_ids = set(result.scalars().all())
-        new_gifts = [
-            gift
-            for gift in unique_gifts.values()
-            if gift.gift_id not in existing_ids
-        ]
-        self._session.add_all(
-            [
-                ArchivedGift(
-                    gift_id=gift.gift_id,
-                    title=gift.title,
-                    emoji=gift.emoji,
-                    star_count=gift.star_count,
-                    sticker_file_id=None,
-                    is_active=True,
-                    created_by_admin_id=admin_id,
+        removed = 0
+        for gift in existing:
+            if gift.gift_id not in catalog:
+                await self._session.delete(gift)
+                removed += 1
+
+        created = 0
+        updated = 0
+        for gift_id, catalog_item in catalog.items():
+            gift = existing_by_gift_id.get(gift_id)
+            if gift is None:
+                self._session.add(
+                    ArchivedGift(
+                        gift_id=catalog_item.gift_id,
+                        title=catalog_item.title,
+                        emoji=catalog_item.emoji,
+                        star_count=catalog_item.star_count,
+                        sticker_file_id=None,
+                        is_active=True,
+                        created_by_admin_id=None,
+                    )
                 )
-                for gift in new_gifts
-            ]
+                created += 1
+                continue
+
+            expected = {
+                "title": catalog_item.title,
+                "emoji": catalog_item.emoji,
+                "star_count": catalog_item.star_count,
+                "sticker_file_id": None,
+                "is_active": True,
+                "created_by_admin_id": None,
+            }
+            if all(getattr(gift, key) == value for key, value in expected.items()):
+                continue
+            for key, value in expected.items():
+                setattr(gift, key, value)
+            updated += 1
+
+        if created or updated or removed:
+            await self._session.commit()
+
+        return ArchivedGiftCatalogSyncResult(
+            created=created,
+            updated=updated,
+            removed=removed,
         )
-        await self._session.commit()
-        return len(new_gifts), len(unique_gifts) - len(new_gifts)
-
-    async def update_fields(self, archived_gift_id: int, **values) -> ArchivedGift:
-        gift = await self.get(archived_gift_id)
-        if gift is None:
-            raise LookupError("Archived gift not found")
-        allowed = {"title", "emoji", "star_count", "sticker_file_id"}
-        unknown = set(values) - allowed
-        if unknown:
-            raise ValueError(f"Unsupported archived gift fields: {sorted(unknown)}")
-        for key, value in values.items():
-            setattr(gift, key, value)
-        gift.updated_at = datetime.utcnow()
-        await self._session.commit()
-        return gift
-
-    async def set_active(
-        self, archived_gift_id: int, *, is_active: bool
-    ) -> ArchivedGift:
-        gift = await self.get(archived_gift_id)
-        if gift is None:
-            raise LookupError("Archived gift not found")
-        gift.is_active = is_active
-        gift.updated_at = datetime.utcnow()
-        await self._session.commit()
-        return gift
-
-    async def delete(self, archived_gift_id: int) -> ArchivedGift:
-        gift = await self.get(archived_gift_id)
-        if gift is None:
-            raise LookupError("Archived gift not found")
-        await self._session.delete(gift)
-        await self._session.commit()
-        return gift

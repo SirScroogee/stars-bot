@@ -135,7 +135,7 @@ class User(Base):
 
 
 class ArchivedGift(Base):
-    """Administrator-managed Telegram Gift hidden from the live catalog."""
+    """Built-in retired Telegram Gift hidden from the live catalog."""
 
     __tablename__ = "archived_gifts"
 
