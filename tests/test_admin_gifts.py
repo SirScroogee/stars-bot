@@ -11,25 +11,39 @@ from src.bot.handlers.admin_gifts import (
     TELEGRAM_GIFT_TEXT_LIMIT,
     _get_live_gifts_and_balance,
     _issue_payment_invoice,
+    _preflight_selected_gift,
     _refund_paid_topups,
     build_gift_text,
     max_comment_length,
     telegram_text_length,
+    validate_archived_gift_id,
+    validate_archived_gift_price,
+    validate_archived_gift_title,
     validate_gift_pre_checkout,
 )
 from src.bot.keyboards.admin import AdminCallback, get_admin_menu_keyboard
-from src.bot.keyboards.admin_gifts import admin_gift_catalog_keyboard
+from src.bot.keyboards.admin_gifts import (
+    _archived_gift_button_title,
+    admin_gift_catalog_keyboard,
+    archived_gift_item_keyboard,
+    archived_gift_manage_keyboard,
+)
 from src.db.models import (
     AdminGift,
     AdminGiftPayment,
     AdminGiftPaymentStatus,
     AdminGiftStatus,
+    ArchivedGift,
     Base,
     User,
 )
 from src.services.admin_gift_service import (
     AdminGiftService,
     GiftInvoiceAlreadyPaidError,
+)
+from src.services.archived_gift_service import (
+    ArchivedGiftAlreadyExistsError,
+    ArchivedGiftService,
 )
 
 
@@ -110,6 +124,243 @@ def test_catalog_is_dynamic_and_has_no_upgrade_action() -> None:
     assert "💝 50 ⭐" in _button_texts(markup)
     assert "улучш" not in text
     assert "upgrade" not in " ".join(callbacks).lower()
+    assert "admin:gifts:archive:choose" in callbacks
+
+
+def test_archived_gift_input_validation() -> None:
+    assert validate_archived_gift_id(" 5170233102089322756 ") == "5170233102089322756"
+    assert validate_archived_gift_price("250") == 250
+    assert validate_archived_gift_title("  Новогодний подарок  ") == "Новогодний подарок"
+
+    for invalid in ("", "-1", "1.5", "abc", str(2**63)):
+        with pytest.raises(ValueError):
+            validate_archived_gift_id(invalid)
+    for invalid in ("", "0", "-50", "1.5"):
+        with pytest.raises(ValueError):
+            validate_archived_gift_price(invalid)
+
+
+def test_archived_gift_management_keyboards_use_stable_database_ids() -> None:
+    gifts = [
+        SimpleNamespace(
+            id=41,
+            title="Ёлка",
+            emoji="🎄",
+            star_count=50,
+            is_active=True,
+        ),
+        SimpleNamespace(
+            id=99,
+            title="Сердце",
+            emoji="💝",
+            star_count=100,
+            is_active=False,
+        ),
+    ]
+    markup = archived_gift_manage_keyboard(gifts, has_recipient=True)
+    callbacks = _callback_values(markup)
+
+    assert "admin:gifts:archive:item:41" in callbacks
+    assert "admin:gifts:archive:item:99" in callbacks
+    assert "admin:gifts:archive:add" in callbacks
+    assert "admin:gifts:archive:choose" in callbacks
+
+    active_item = archived_gift_item_keyboard(gifts[0], has_recipient=True)
+    inactive_item = archived_gift_item_keyboard(gifts[1], has_recipient=True)
+    assert "admin:gifts:archive:select:41" in _callback_values(active_item)
+    assert "admin:gifts:archive:set:0:41" in _callback_values(active_item)
+    assert "admin:gifts:archive:set:1:99" in _callback_values(inactive_item)
+    assert not any(
+        value.startswith("admin:gifts:archive:select:")
+        for value in _callback_values(inactive_item)
+    )
+
+
+def test_archived_gift_button_title_is_bounded() -> None:
+    compact = _archived_gift_button_title("Очень длинное название " * 10)
+
+    assert len(compact) == 32
+    assert compact.endswith("…")
+
+
+@pytest.mark.asyncio
+async def test_archived_preflight_skips_live_catalog_and_uses_saved_snapshot() -> None:
+    archived = SimpleNamespace(
+        id=17,
+        gift_id="5170233102089322756",
+        title="Архивный подарок",
+        emoji="🎁",
+        star_count=50,
+        sticker_file_id="sticker-file-id",
+        is_active=True,
+    )
+    balance = SimpleNamespace(amount=500)
+    bot = SimpleNamespace(get_my_star_balance=AsyncMock(return_value=balance))
+
+    with patch(
+        "src.bot.handlers.admin_gifts._get_archived_gift",
+        AsyncMock(return_value=archived),
+    ):
+        verified, returned_balance = await _preflight_selected_gift(
+            bot,
+            {
+                "source": "archive",
+                "archived_gift_id": archived.id,
+                "id": archived.gift_id,
+            },
+        )
+
+    assert returned_balance is balance
+    assert verified == {
+        "id": archived.gift_id,
+        "source": "archive",
+        "archived_gift_id": archived.id,
+        "title": archived.title,
+        "emoji": archived.emoji,
+        "star_count": archived.star_count,
+        "total_count": None,
+        "remaining_count": None,
+        "sticker_file_id": archived.sticker_file_id,
+    }
+    bot.get_my_star_balance.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_archived_gift_crud_is_shared_and_enforces_unique_gift_id() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(
+            lambda sync_connection: Base.metadata.create_all(
+                sync_connection,
+                tables=[User.__table__, ArchivedGift.__table__],
+            )
+        )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    try:
+        async with session_factory() as session:
+            session.add(
+                User(
+                    id=42,
+                    username="admin",
+                    language_code="ru",
+                    referral_code="ARCHIVE_ADMIN",
+                    is_admin=True,
+                )
+            )
+            await session.commit()
+            service = ArchivedGiftService(session)
+            gift = await service.create(
+                gift_id="5170233102089322756",
+                title="Праздничный подарок",
+                emoji="🎄",
+                star_count=50,
+                sticker_file_id=None,
+                admin_id=42,
+            )
+            gift_database_id = gift.id
+            telegram_gift_id = gift.gift_id
+
+            assert (await service.list_gifts(active_only=True))[0].id == gift_database_id
+            with pytest.raises(ArchivedGiftAlreadyExistsError):
+                await service.create(
+                    gift_id=telegram_gift_id,
+                    title="Дубликат",
+                    emoji="🎁",
+                    star_count=50,
+                    sticker_file_id=None,
+                    admin_id=42,
+                )
+
+            updated = await service.update_fields(
+                gift_database_id,
+                title="Новое название",
+                star_count=75,
+            )
+            assert updated.title == "Новое название"
+            assert updated.star_count == 75
+            assert (
+                await service.set_active(gift_database_id, is_active=False)
+            ).is_active is False
+            assert (
+                await service.set_active(gift_database_id, is_active=False)
+            ).is_active is False
+            assert await service.list_gifts(active_only=True) == []
+            deleted = await service.delete(gift_database_id)
+            assert deleted.gift_id == "5170233102089322756"
+            assert await service.get(gift_database_id) is None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_admin_gift_attempt_keeps_archived_source_snapshot() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(
+            lambda sync_connection: Base.metadata.create_all(
+                sync_connection,
+                tables=[
+                    User.__table__,
+                    ArchivedGift.__table__,
+                    AdminGift.__table__,
+                ],
+            )
+        )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    try:
+        async with session_factory() as session:
+            session.add_all(
+                [
+                    User(
+                        id=42,
+                        username="admin",
+                        language_code="ru",
+                        referral_code="ARCHIVE_ATTEMPT_ADMIN",
+                        is_admin=True,
+                    ),
+                    User(
+                        id=123456,
+                        username="recipient",
+                        language_code="ru",
+                        referral_code="ARCHIVE_ATTEMPT_USER",
+                    ),
+                ]
+            )
+            await session.commit()
+            archived = await ArchivedGiftService(session).create(
+                gift_id="5170233102089322756",
+                title="Старый праздник",
+                emoji="🎄",
+                star_count=50,
+                sticker_file_id=None,
+                admin_id=42,
+            )
+            service = AdminGiftService(session, bot=SimpleNamespace())
+            attempt, created = await service.create_or_get_attempt(
+                operation_key="archived-source-snapshot",
+                admin_id=42,
+                admin_username="admin",
+                recipient_id=123456,
+                recipient_username="recipient",
+                recipient_was_banned=False,
+                gift_id=archived.gift_id,
+                gift_emoji=archived.emoji,
+                gift_star_count=archived.star_count,
+                gift_text="",
+                bot_balance_before=100,
+                gift_source="archive",
+                gift_title=archived.title,
+                archived_gift_id=archived.id,
+            )
+
+            assert created is True
+            assert attempt.gift_source == "archive"
+            assert attempt.gift_title_snapshot == archived.title
+            assert attempt.archived_gift_id == archived.id
+    finally:
+        await engine.dispose()
 
 
 class FakeBot:

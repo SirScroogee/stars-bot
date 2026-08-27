@@ -134,6 +134,34 @@ class User(Base):
     )
 
 
+class ArchivedGift(Base):
+    """Administrator-managed Telegram Gift hidden from the live catalog."""
+
+    __tablename__ = "archived_gifts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    gift_id: Mapped[str] = mapped_column(String(32))
+    title: Mapped[str] = mapped_column(String(100))
+    emoji: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    star_count: Mapped[int] = mapped_column(Integer)
+    sticker_file_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by_admin_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint("gift_id", name="uq_archived_gifts_gift_id"),
+        Index("ix_archived_gifts_active_title", "is_active", "title"),
+    )
+
+
 class AdminGift(Base):
     """Audit record for a Telegram Gift sent by an administrator."""
 
@@ -151,6 +179,15 @@ class AdminGift(Base):
     gift_id: Mapped[str] = mapped_column(String(255))
     gift_emoji: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     gift_star_count: Mapped[int] = mapped_column(Integer)
+    gift_source: Mapped[str] = mapped_column(String(20), default="live")
+    gift_title_snapshot: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True
+    )
+    archived_gift_id: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        ForeignKey("archived_gifts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     pay_for_upgrade: Mapped[bool] = mapped_column(Boolean, default=False)
     gift_text: Mapped[str] = mapped_column(String(128))
     bot_balance_before: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
