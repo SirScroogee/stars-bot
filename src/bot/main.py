@@ -263,6 +263,17 @@ async def main() -> None:
         # Логируем запуск
         await tg_logger.log_bot_started()
 
+        try:
+            gift_recovery = await admin_gifts.recover_admin_gift_operations(bot)
+            logger.info(
+                "Admin Gift startup recovery: found=%s recovered=%s failed=%s",
+                gift_recovery["found"],
+                gift_recovery["recovered"],
+                gift_recovery["failed"],
+            )
+        except Exception:
+            logger.exception("Admin Gift startup recovery failed")
+
         # Запускаем polling
         await dp.start_polling(bot)
     finally:

@@ -6,10 +6,10 @@ import html
 import logging
 import secrets
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramNetworkError
+from aiogram.exceptions import TelegramNetworkError, TelegramServerError
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -21,7 +21,7 @@ from aiogram.types import (
     PreCheckoutQuery,
     ReplyKeyboardRemove,
 )
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 
 from src.bot.callback_utils import safe_callback_answer
 from src.bot.handlers.admin_utils import check_admin, check_admin_message
@@ -39,6 +39,7 @@ from src.bot.keyboards.admin_gifts import (
 )
 from src.db.models import (
     AdminGift,
+    AdminGiftPayment,
     AdminGiftPaymentStatus,
     AdminGiftStatus,
     ArchivedGift,
@@ -48,6 +49,7 @@ from src.db.session import async_session_factory
 from src.services.admin_gift_service import (
     AdminGiftService,
     GiftInvoiceAlreadyPaidError,
+    GiftPaymentRefundRequiredError,
     GiftSendOutcome,
 )
 from src.services.archived_gift_service import ArchivedGiftService
@@ -58,9 +60,11 @@ logger = logging.getLogger(__name__)
 router = Router(name="admin_gifts")
 _confirmation_locks: dict[int, asyncio.Lock] = {}
 _archive_catalog_lock = asyncio.Lock()
+_gift_delivery_lock = asyncio.Lock()
 
 TELEGRAM_GIFT_TEXT_LIMIT = 128
 TELEGRAM_USER_ID_MAX = 0xFFFFFFFFFF
+STALE_GIFT_SENDING_MINUTES = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +74,20 @@ class GiftRecipientTarget:
     display_name: str | None = None
     is_banned: bool = False
     is_registered: bool = False
+
+
+def _is_current_gift_controller(data: dict, message) -> bool:
+    return bool(
+        message
+        and data.get("controller_chat_id") == message.chat.id
+        and data.get("controller_message_id") == message.message_id
+    )
+
+
+async def _clear_matching_gift_state(state: FSMContext, message) -> None:
+    data = await state.get_data()
+    if _is_current_gift_controller(data, message):
+        await state.clear()
 
 
 class AdminGiftStates(StatesGroup):
@@ -210,7 +228,7 @@ async def _get_live_gifts_and_balance(bot: Bot):
                 bot.get_available_gifts(request_timeout=12),
                 bot.get_my_star_balance(request_timeout=12),
             )
-        except TelegramNetworkError:
+        except (TelegramNetworkError, TelegramServerError):
             if attempt:
                 raise
             logger.warning("Retrying Telegram Gift preflight after a network error")
@@ -222,7 +240,7 @@ async def _get_bot_star_balance(bot: Bot):
     for attempt in range(2):
         try:
             return await bot.get_my_star_balance(request_timeout=12)
-        except TelegramNetworkError:
+        except (TelegramNetworkError, TelegramServerError):
             if attempt:
                 raise
             logger.warning("Retrying Telegram Stars balance check after a network error")
@@ -524,12 +542,42 @@ async def _start_recipient_search(
         logger.warning("Could not show native Gift recipient picker: %s", exc)
 
 
+async def _require_gift_wizard(
+    callback: CallbackQuery,
+    state: FSMContext,
+    bot: Bot,
+    *,
+    required: tuple[str, ...] = (),
+) -> dict | None:
+    """Recover old admin buttons instead of letting missing FSM data crash."""
+    data = await state.get_data()
+    missing = [key for key in required if data.get(key) is None]
+    is_current = _is_current_gift_controller(data, callback.message)
+    if is_current:
+        if not missing:
+            return data
+    elif data.get("controller_chat_id") and data.get("controller_message_id"):
+        await safe_callback_answer(
+            callback,
+            "Это кнопка из старой сессии отправки.",
+            show_alert=True,
+        )
+        return None
+
+    await _start_recipient_search(
+        bot,
+        state,
+        chat_id=callback.message.chat.id,
+        message_id=callback.message.message_id,
+        error="Сессия отправки устарела. Выберите получателя заново.",
+    )
+    await safe_callback_answer(callback, "Сессия отправки восстановлена")
+    return None
+
+
 async def _load_catalog(bot: Bot, state: FSMContext) -> str | None:
     try:
-        gifts, balance = await asyncio.gather(
-            bot.get_available_gifts(request_timeout=20),
-            bot.get_my_star_balance(request_timeout=20),
-        )
+        gifts, balance = await _get_live_gifts_and_balance(bot)
     except Exception as exc:
         logger.warning("Could not load Telegram Gifts catalog: %s", exc)
         return "Не удалось получить каталог подарков или баланс бота. Попробуйте ещё раз."
@@ -571,24 +619,6 @@ async def _show_catalog(
     )
 
 
-async def _ensure_preview(bot: Bot, state: FSMContext) -> None:
-    data = await state.get_data()
-    if data.get("gift_preview_message_id"):
-        return
-    gift = data.get("selected_gift") or {}
-    sticker_file_id = gift.get("sticker_file_id")
-    if not sticker_file_id:
-        return
-    try:
-        preview = await bot.send_sticker(
-            chat_id=data["controller_chat_id"],
-            sticker=sticker_file_id,
-        )
-        await state.update_data(gift_preview_message_id=preview.message_id)
-    except Exception as exc:
-        logger.info("Could not show Telegram Gift sticker preview: %s", exc)
-
-
 async def _show_selected(bot: Bot, state: FSMContext) -> None:
     await state.set_state(None)
     data = await state.get_data()
@@ -596,7 +626,6 @@ async def _show_selected(bot: Bot, state: FSMContext) -> None:
     if not gift:
         await _show_catalog(bot, state, error="Сначала выберите подарок.")
         return
-    await _ensure_preview(bot, state)
     remaining = gift.get("remaining_count")
     remaining_text = (
         f"\n📦 Осталось: <b>{remaining:,}</b>" if remaining is not None else ""
@@ -781,6 +810,16 @@ def _attempt_recipient_name(attempt: AdminGift) -> str:
     return f"ID: {attempt.recipient_id}"
 
 
+def _attempt_reply_markup(attempt_id: int, status: str):
+    if status in {
+        AdminGiftStatus.AWAITING_PAYMENT.value,
+        AdminGiftStatus.PENDING.value,
+        AdminGiftStatus.SENDING.value,
+    }:
+        return admin_gift_payment_wait_keyboard(attempt_id)
+    return admin_gift_result_keyboard()
+
+
 async def _edit_attempt_controller(
     bot: Bot,
     attempt: AdminGift,
@@ -933,7 +972,9 @@ async def _refund_paid_topups(
     return refunded, failed
 
 
-async def _resume_gift_attempt(bot: Bot, attempt_id: int) -> tuple[AdminGift, str, str]:
+async def _resume_gift_attempt_unlocked(
+    bot: Bot, attempt_id: int
+) -> tuple[AdminGift, str, str]:
     """Recheck shared bot balance and continue an already persisted Gift attempt."""
     async with async_session_factory() as session:
         service = AdminGiftService(session, bot)
@@ -946,6 +987,33 @@ async def _resume_gift_attempt(bot: Bot, attempt_id: int) -> tuple[AdminGift, st
         )
     if attempt is None:
         raise LookupError("Gift attempt not found")
+
+    if attempt.status == AdminGiftStatus.SENDING.value:
+        stale_before = datetime.utcnow() - timedelta(
+            minutes=STALE_GIFT_SENDING_MINUTES
+        )
+        async with async_session_factory() as session:
+            service = AdminGiftService(session, bot)
+            attempt, sealed = await service.mark_stale_sending_unknown(
+                attempt.id,
+                stale_before=stale_before,
+            )
+        if sealed:
+            return (
+                attempt,
+                attempt.status,
+                "⚠️ <b>Результат прерванной отправки неизвестен</b>\n\n"
+                "Процесс остановился после начала отправки. Подарок мог быть "
+                "доставлен, поэтому повтор и автоматический возврат запрещены.\n"
+                f"🧾 Операция: <code>#{attempt.id}</code>",
+            )
+        return (
+            attempt,
+            attempt.status,
+            "⏳ <b>Telegram ещё обрабатывает отправку</b>\n\n"
+            "Подождите несколько минут и проверьте операцию снова.\n"
+            f"🧾 Операция: <code>#{attempt.id}</code>",
+        )
 
     if attempt.status == AdminGiftStatus.AWAITING_PAYMENT.value:
         if (
@@ -999,6 +1067,14 @@ async def _resume_gift_attempt(bot: Bot, attempt_id: int) -> tuple[AdminGift, st
             f"👤 Получатель: <b>{html.escape(_attempt_recipient_name(attempt))}</b>\n"
             f"🧾 Операция: <code>#{attempt.id}</code>",
         )
+    if attempt.status == AdminGiftStatus.CANCELLED.value:
+        return (
+            attempt,
+            attempt.status,
+            "🚫 <b>Операция отменена</b>\n\n"
+            "Неоплаченный Telegram-счёт больше не принимается.\n"
+            f"🧾 Операция: <code>#{attempt.id}</code>",
+        )
     if attempt.status == AdminGiftStatus.FAILED.value:
         async with async_session_factory() as session:
             service = AdminGiftService(session, bot)
@@ -1024,10 +1100,7 @@ async def _resume_gift_attempt(bot: Bot, attempt_id: int) -> tuple[AdminGift, st
             + refund_text
             + f"\n🧾 Операция: <code>#{attempt.id}</code>",
         )
-    if attempt.status in {
-        AdminGiftStatus.UNKNOWN.value,
-        AdminGiftStatus.SENDING.value,
-    }:
+    if attempt.status == AdminGiftStatus.UNKNOWN.value:
         return (
             attempt,
             attempt.status,
@@ -1043,10 +1116,7 @@ async def _resume_gift_attempt(bot: Bot, attempt_id: int) -> tuple[AdminGift, st
             target_star_count = attempt.gift_star_count
             target_emoji = attempt.gift_emoji
         else:
-            gifts, balance = await asyncio.gather(
-                bot.get_available_gifts(request_timeout=20),
-                bot.get_my_star_balance(request_timeout=20),
-            )
+            gifts, balance = await _get_live_gifts_and_balance(bot)
             live = next(
                 (gift for gift in gifts.gifts if gift.id == attempt.gift_id),
                 None,
@@ -1207,6 +1277,88 @@ async def _resume_gift_attempt(bot: Bot, attempt_id: int) -> tuple[AdminGift, st
     return attempt, outcome.status, text
 
 
+async def _resume_gift_attempt(bot: Bot, attempt_id: int) -> tuple[AdminGift, str, str]:
+    async with _gift_delivery_lock:
+        return await _resume_gift_attempt_unlocked(bot, attempt_id)
+
+
+async def recover_admin_gift_operations(bot: Bot) -> dict[str, int]:
+    """Continue charged Gifts and seal interrupted sends during startup."""
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(AdminGift.id, AdminGift.status)
+            .outerjoin(
+                AdminGiftPayment,
+                AdminGiftPayment.gift_attempt_id == AdminGift.id,
+            )
+            .where(
+                or_(
+                    and_(
+                        AdminGift.status == AdminGiftStatus.PENDING.value,
+                        AdminGiftPayment.status
+                        == AdminGiftPaymentStatus.PAID.value,
+                    ),
+                    and_(
+                        AdminGift.status == AdminGiftStatus.FAILED.value,
+                        AdminGiftPayment.status.in_(
+                            [
+                                AdminGiftPaymentStatus.PAID.value,
+                                AdminGiftPaymentStatus.REFUND_FAILED.value,
+                            ]
+                        ),
+                    ),
+                    AdminGift.status == AdminGiftStatus.SENDING.value,
+                )
+            )
+            .distinct()
+            .order_by(AdminGift.id)
+        )
+        attempts = list(result.all())
+
+    recovered = 0
+    failed = 0
+    for attempt_id, initial_status in attempts:
+        try:
+            if initial_status == AdminGiftStatus.SENDING.value:
+                async with async_session_factory() as session:
+                    service = AdminGiftService(session, bot)
+                    await service.mark_stale_sending_unknown(
+                        attempt_id,
+                        stale_before=datetime.utcnow() + timedelta(seconds=1),
+                    )
+            attempt, status, text = await _resume_gift_attempt(bot, attempt_id)
+            reply_markup = _attempt_reply_markup(attempt.id, status)
+            if attempt.controller_chat_id and attempt.controller_message_id:
+                await _edit_attempt_controller(bot, attempt, text, reply_markup)
+            else:
+                await bot.send_message(
+                    attempt.admin_id,
+                    text,
+                    reply_markup=reply_markup,
+                    parse_mode="HTML",
+                )
+            recovered += 1
+        except Exception as exc:
+            failed += 1
+            logger.exception(
+                "Could not recover admin Gift attempt %s during startup",
+                attempt_id,
+            )
+            try:
+                await tg_logger.log_error(
+                    error_type="AdminGiftStartupRecoveryError",
+                    error_message=str(exc),
+                    details=f"Операция: #{attempt_id}",
+                )
+            except Exception:
+                pass
+    return {
+        "found": len(attempts),
+        "recovered": recovered,
+        "failed": failed,
+    }
+
+
 @router.callback_query(F.data == AdminCallback.GIFTS)
 async def callback_admin_gifts(
     callback: CallbackQuery,
@@ -1230,6 +1382,10 @@ async def callback_admin_gift_archive_choose(
 ) -> None:
     if not await check_admin(callback):
         return
+    if await _require_gift_wizard(
+        callback, state, bot, required=("recipient_id",)
+    ) is None:
+        return
     await safe_callback_answer(callback)
     await _delete_preview(bot, state)
     await _show_archived_choose(bot, state)
@@ -1240,6 +1396,10 @@ async def callback_admin_gift_archive_choose_page(
     callback: CallbackQuery, state: FSMContext, bot: Bot
 ) -> None:
     if not await check_admin(callback):
+        return
+    if await _require_gift_wizard(
+        callback, state, bot, required=("recipient_id",)
+    ) is None:
         return
     await safe_callback_answer(callback)
     await _show_archived_choose(
@@ -1254,6 +1414,10 @@ async def callback_admin_gift_archive_select(
     callback: CallbackQuery, state: FSMContext, bot: Bot
 ) -> None:
     if not await check_admin(callback):
+        return
+    if await _require_gift_wizard(
+        callback, state, bot, required=("recipient_id",)
+    ) is None:
         return
     await safe_callback_answer(callback, "Проверяю баланс…")
     archived_gift_id = int(callback.data.rsplit(":", 1)[-1])
@@ -1294,7 +1458,7 @@ async def callback_admin_gift_archive_legacy_action(
         return
     await safe_callback_answer(callback, "Каталог теперь обновляется автоматически")
     data = await state.get_data()
-    if data.get("recipient_id"):
+    if _is_current_gift_controller(data, callback.message) and data.get("recipient_id"):
         await _show_archived_choose(bot, state)
         return
     await _start_recipient_search(
@@ -1446,7 +1610,9 @@ async def callback_admin_gift_recipient(
 ) -> None:
     if not await check_admin(callback):
         return
-    data = await state.get_data()
+    data = await _require_gift_wizard(callback, state, bot)
+    if data is None:
+        return
     await _start_recipient_search(
         bot,
         state,
@@ -1462,6 +1628,10 @@ async def callback_admin_gift_refresh(
 ) -> None:
     if not await check_admin(callback):
         return
+    if await _require_gift_wizard(
+        callback, state, bot, required=("recipient_id",)
+    ) is None:
+        return
     await safe_callback_answer(callback, "Обновляю каталог…")
     error = await _load_catalog(bot, state)
     await _show_catalog(bot, state, error=error)
@@ -1473,8 +1643,16 @@ async def callback_admin_gift_catalog(
 ) -> None:
     if not await check_admin(callback):
         return
+    data = await _require_gift_wizard(
+        callback, state, bot, required=("recipient_id",)
+    )
+    if data is None:
+        return
     await _delete_preview(bot, state)
-    await _show_catalog(bot, state)
+    error = None
+    if data.get("available_gifts") is None:
+        error = await _load_catalog(bot, state)
+    await _show_catalog(bot, state, error=error)
     await safe_callback_answer(callback)
 
 
@@ -1484,24 +1662,12 @@ async def callback_admin_gift_page(
 ) -> None:
     if not await check_admin(callback):
         return
-    data = await state.get_data()
-    if not all(
-        data.get(key)
-        for key in (
-            "controller_chat_id",
-            "controller_message_id",
-            "recipient_id",
-            "available_gifts",
-        )
-    ):
-        await _start_recipient_search(
-            bot,
-            state,
-            chat_id=callback.message.chat.id,
-            message_id=callback.message.message_id,
-            error="Сессия выбора подарка устарела. Выберите получателя заново.",
-        )
-        await safe_callback_answer(callback, "Сессия выбора обновлена")
+    if await _require_gift_wizard(
+        callback,
+        state,
+        bot,
+        required=("recipient_id", "available_gifts"),
+    ) is None:
         return
     page = int(callback.data.rsplit(":", 1)[-1])
     await _show_catalog(bot, state, page=page)
@@ -1521,7 +1687,14 @@ async def callback_admin_gift_select(
 ) -> None:
     if not await check_admin(callback):
         return
-    data = await state.get_data()
+    data = await _require_gift_wizard(
+        callback,
+        state,
+        bot,
+        required=("recipient_id", "available_gifts"),
+    )
+    if data is None:
+        return
     gifts = data.get("available_gifts") or []
     index = int(callback.data.rsplit(":", 1)[-1])
     if index < 0 or index >= len(gifts):
@@ -1543,6 +1716,10 @@ async def callback_admin_gift_selected(
 ) -> None:
     if not await check_admin(callback):
         return
+    if await _require_gift_wizard(
+        callback, state, bot, required=("recipient_id", "selected_gift")
+    ) is None:
+        return
     await _show_selected(bot, state)
     await safe_callback_answer(callback)
 
@@ -1552,6 +1729,10 @@ async def callback_admin_gift_comment(
     callback: CallbackQuery, state: FSMContext, bot: Bot
 ) -> None:
     if not await check_admin(callback):
+        return
+    if await _require_gift_wizard(
+        callback, state, bot, required=("recipient_id", "selected_gift")
+    ) is None:
         return
     await _show_comment_prompt(bot, state)
     await safe_callback_answer(callback)
@@ -1582,6 +1763,10 @@ async def callback_admin_gift_comment_skip(
 ) -> None:
     if not await check_admin(callback):
         return
+    if await _require_gift_wizard(
+        callback, state, bot, required=("recipient_id", "selected_gift")
+    ) is None:
+        return
     await _show_confirmation(bot, state, None)
     await safe_callback_answer(callback)
 
@@ -1600,39 +1785,38 @@ async def callback_admin_gift_confirm(
             show_alert=True,
         )
         return
-    async with lock:
-        await _process_admin_gift_confirm(callback, state, bot)
+    if await _require_gift_wizard(
+        callback,
+        state,
+        bot,
+        required=("recipient_id", "selected_gift", "operation_key", "gift_text"),
+    ) is None:
+        return
+    await safe_callback_answer(callback, "Проверяю и отправляю…")
+    try:
+        async with lock:
+            async with _gift_delivery_lock:
+                await _process_admin_gift_confirm(callback, state, bot)
+    finally:
+        if _confirmation_locks.get(callback.from_user.id) is lock:
+            _confirmation_locks.pop(callback.from_user.id, None)
 
 
 async def _process_admin_gift_confirm(
     callback: CallbackQuery, state: FSMContext, bot: Bot
 ) -> None:
-    data = await state.get_data()
+    data = await _require_gift_wizard(
+        callback,
+        state,
+        bot,
+        required=("recipient_id", "selected_gift", "operation_key", "gift_text"),
+    )
+    if data is None:
+        return
     selected = data.get("selected_gift")
     operation_key = data.get("operation_key")
     gift_text = data.get("gift_text")
     recipient_id = data.get("recipient_id")
-    if (
-        not selected
-        or not operation_key
-        or gift_text is None
-        or not recipient_id
-    ):
-        await _start_recipient_search(
-            bot,
-            state,
-            chat_id=callback.message.chat.id,
-            message_id=callback.message.message_id,
-            error="Данные отправки устарели. Выберите получателя заново.",
-        )
-        await safe_callback_answer(
-            callback,
-            "Данные устарели. Форма восстановлена.",
-            show_alert=True,
-        )
-        return
-
-    await safe_callback_answer(callback, "Проверяю и отправляю…")
     archived = selected.get("source") == "archive"
     try:
         await _edit_controller(
@@ -1728,15 +1912,10 @@ async def _process_admin_gift_confirm(
         if not created_attempt and attempt.status != AdminGiftStatus.PENDING.value:
             await _delete_preview(bot, state)
             await state.clear()
-            attempt, status, text = await _resume_gift_attempt(bot, attempt.id)
-            reply_markup = (
-                admin_gift_payment_wait_keyboard(attempt.id)
-                if status in {
-                    AdminGiftStatus.AWAITING_PAYMENT.value,
-                    AdminGiftStatus.PENDING.value,
-                }
-                else admin_gift_result_keyboard()
+            attempt, status, text = await _resume_gift_attempt_unlocked(
+                bot, attempt.id
             )
+            reply_markup = _attempt_reply_markup(attempt.id, status)
             await callback.message.edit_text(
                 text,
                 reply_markup=reply_markup,
@@ -1983,7 +2162,7 @@ async def successful_payment_admin_gift(message: Message, bot: Bot) -> None:
                     )
                 record_error = None
                 break
-            except GiftInvoiceAlreadyPaidError:
+            except GiftPaymentRefundRequiredError:
                 raise
             except Exception as exc:
                 record_error = exc
@@ -1996,7 +2175,7 @@ async def successful_payment_admin_gift(message: Message, bot: Bot) -> None:
                     await asyncio.sleep(0.2)
         if record_error is not None:
             raise record_error
-    except GiftInvoiceAlreadyPaidError as exc:
+    except GiftPaymentRefundRequiredError as exc:
         refund_error: Exception | None = None
         try:
             refunded = await bot.refund_star_payment(
@@ -2016,21 +2195,25 @@ async def successful_payment_admin_gift(message: Message, bot: Bot) -> None:
 
         if refund_error is None:
             await message.answer(
-                "↩️ <b>Повторная оплата возвращена</b>\n\n"
-                "Этот счёт уже был оплачен ранее, поэтому Telegram Stars "
+                "↩️ <b>Оплата возвращена</b>\n\n"
+                "Этот платёж нельзя применить к операции, поэтому Telegram Stars "
                 "возвращены на ваш аккаунт.",
                 parse_mode="HTML",
             )
         else:
             await message.answer(
-                "⚠️ <b>Обнаружена повторная оплата</b>\n\n"
+                "⚠️ <b>Платёж требует возврата</b>\n\n"
                 "Автоматический возврат не удался. Обратитесь к владельцу бота и "
                 f"передайте Charge ID: <code>{html.escape(successful.telegram_payment_charge_id)}</code>",
                 parse_mode="HTML",
             )
         try:
             await tg_logger.log_error(
-                error_type="AdminGiftDuplicateCharge",
+                error_type=(
+                    "AdminGiftDuplicateCharge"
+                    if isinstance(exc, GiftInvoiceAlreadyPaidError)
+                    else "AdminGiftRejectedCharge"
+                ),
                 error_message=str(refund_error or exc),
                 user_id=message.from_user.id,
                 details=(
@@ -2067,15 +2250,31 @@ async def successful_payment_admin_gift(message: Message, bot: Bot) -> None:
             parse_mode="HTML",
         )
 
-    attempt, status, text = await _resume_gift_attempt(bot, attempt.id)
-    reply_markup = (
-        admin_gift_payment_wait_keyboard(attempt.id)
-        if status in {
-            AdminGiftStatus.AWAITING_PAYMENT.value,
-            AdminGiftStatus.PENDING.value,
-        }
-        else admin_gift_result_keyboard()
-    )
+    try:
+        attempt, status, text = await _resume_gift_attempt(bot, attempt.id)
+    except Exception as exc:
+        logger.exception(
+            "Charged admin Gift attempt %s could not continue",
+            attempt.id,
+        )
+        await message.answer(
+            "⚠️ <b>Оплата сохранена, продолжение временно задержано</b>\n\n"
+            "Новый счёт оплачивать не нужно. Бот повторит обработку после "
+            "перезапуска, либо администратор сможет нажать проверку операции.\n"
+            f"🧾 Операция: <code>#{attempt.id}</code>",
+            parse_mode="HTML",
+        )
+        try:
+            await tg_logger.log_error(
+                error_type="AdminGiftPaidContinuationError",
+                error_message=str(exc),
+                user_id=message.from_user.id,
+                details=f"Операция: #{attempt.id}",
+            )
+        except Exception:
+            pass
+        return
+    reply_markup = _attempt_reply_markup(attempt.id, status)
     await _edit_attempt_controller(bot, attempt, text, reply_markup)
     if message.from_user.id == attempt.admin_id:
         await message.answer(text, reply_markup=reply_markup, parse_mode="HTML")
@@ -2124,16 +2323,21 @@ async def callback_admin_gift_resume(
         return
 
     await safe_callback_answer(callback, "Проверяю оплату и баланс…")
-    attempt, status, text = await _resume_gift_attempt(bot, attempt_id)
-    reply_markup = (
-        admin_gift_payment_wait_keyboard(attempt.id)
-        if status in {
-            AdminGiftStatus.AWAITING_PAYMENT.value,
-            AdminGiftStatus.PENDING.value,
-        }
-        else admin_gift_result_keyboard()
-    )
-    await state.clear()
+    try:
+        attempt, status, text = await _resume_gift_attempt(bot, attempt_id)
+    except Exception as exc:
+        logger.exception("Could not resume admin Gift attempt %s", attempt_id)
+        await callback.message.edit_text(
+            "❌ <b>Не удалось проверить операцию</b>\n\n"
+            "Состояние оплаты сохранено. Попробуйте ещё раз позже.\n"
+            f"Ошибка: <code>{html.escape(str(exc)[:300])}</code>\n"
+            f"🧾 Операция: <code>#{attempt_id}</code>",
+            reply_markup=admin_gift_payment_wait_keyboard(attempt_id),
+            parse_mode="HTML",
+        )
+        return
+    reply_markup = _attempt_reply_markup(attempt.id, status)
+    await _clear_matching_gift_state(state, callback.message)
     await callback.message.edit_text(
         text,
         reply_markup=reply_markup,
@@ -2141,11 +2345,86 @@ async def callback_admin_gift_resume(
     )
 
 
+@router.callback_query(F.data.regexp(r"^admin:gifts:operation:cancel:\d+$"))
+async def callback_admin_gift_operation_cancel(
+    callback: CallbackQuery,
+    state: FSMContext,
+    bot: Bot,
+) -> None:
+    if not await check_admin(callback):
+        return
+    attempt_id = int(callback.data.rsplit(":", 1)[-1])
+    try:
+        async with async_session_factory() as session:
+            service = AdminGiftService(session, bot)
+            outcome = await service.cancel_unpaid_attempt(
+                attempt_id,
+                callback.from_user.id,
+            )
+    except LookupError:
+        await safe_callback_answer(
+            callback,
+            "Операция не найдена или принадлежит другому администратору.",
+            show_alert=True,
+        )
+        return
+
+    if not outcome.cancelled:
+        await safe_callback_answer(
+            callback,
+            outcome.reason or "Операцию уже нельзя отменить.",
+            show_alert=True,
+        )
+        return
+
+    if outcome.payment and outcome.payment.invoice_message_id:
+        try:
+            await bot.delete_message(
+                outcome.attempt.admin_id,
+                outcome.payment.invoice_message_id,
+            )
+        except Exception as exc:
+            logger.info(
+                "Could not delete cancelled Gift invoice %s: %s",
+                outcome.payment.id,
+                exc,
+            )
+
+    await _clear_matching_gift_state(state, callback.message)
+    await safe_callback_answer(callback, "Неоплаченная операция отменена")
+    await callback.message.edit_text(
+        "🚫 <b>Операция отменена</b>\n\n"
+        "Telegram-счёт больше не принимается. Списаний и отправки подарка не было.\n"
+        f"🧾 Операция: <code>#{outcome.attempt.id}</code>",
+        reply_markup=admin_gift_result_keyboard(),
+        parse_mode="HTML",
+    )
+    try:
+        await tg_logger.log_admin_action(
+            admin_id=outcome.attempt.admin_id,
+            admin_username=outcome.attempt.admin_username_snapshot,
+            action="Отмена Telegram Gift",
+            details=f"Операция: #{outcome.attempt.id}\nСтатус: cancelled",
+        )
+    except Exception as exc:
+        logger.error("Could not publish cancelled Gift log: %s", exc)
+
+
 @router.callback_query(F.data == "admin:gifts:cancel")
 async def callback_admin_gift_cancel(
     callback: CallbackQuery, state: FSMContext, bot: Bot
 ) -> None:
     if not await check_admin(callback):
+        return
+    data = await state.get_data()
+    if data.get("controller_message_id") and not _is_current_gift_controller(
+        data, callback.message
+    ):
+        await safe_callback_answer(
+            callback,
+            "Это кнопка из старой сессии отправки.",
+            show_alert=True,
+        )
         return
     await _delete_preview(bot, state)
     await _remove_recipient_picker(bot, state)

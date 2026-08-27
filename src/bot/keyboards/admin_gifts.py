@@ -310,6 +310,13 @@ def admin_gift_payment_wait_keyboard(attempt_id: int) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
+                    text="✖️ Отменить неоплаченную операцию",
+                    callback_data=f"admin:gifts:operation:cancel:{attempt_id}",
+                    style="danger",
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text="◀️ В админ-панель",
                     callback_data=AdminCallback.BACK,
                 )

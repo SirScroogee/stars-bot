@@ -10,9 +10,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from src.bot.handlers.admin_gifts import (
     TELEGRAM_GIFT_TEXT_LIMIT,
     _get_live_gifts_and_balance,
+    _is_current_gift_controller,
     _issue_payment_invoice,
     _preflight_selected_gift,
     _refund_paid_topups,
+    _require_gift_wizard,
     _resolve_recipient_input,
     build_gift_text,
     describe_gift_delivery_error,
@@ -20,6 +22,7 @@ from src.bot.handlers.admin_gifts import (
     telegram_text_length,
     validate_telegram_user_id,
     validate_gift_pre_checkout,
+    recover_admin_gift_operations,
 )
 from src.bot.keyboards.admin import AdminCallback, get_admin_menu_keyboard
 from src.bot.keyboards.admin_gifts import (
@@ -40,6 +43,7 @@ from src.db.models import (
 from src.services.admin_gift_service import (
     AdminGiftService,
     GiftInvoiceAlreadyPaidError,
+    GiftPaymentRefundRequiredError,
 )
 from src.services.archived_gift_catalog import RETIRED_GIFT_CATALOG
 from src.services.archived_gift_service import ArchivedGiftService
@@ -75,6 +79,59 @@ def test_recipient_picker_requests_one_non_bot_with_identity() -> None:
     assert button.request_users.request_name is True
     assert button.request_users.request_username is True
     assert markup.one_time_keyboard is True
+
+
+def test_payment_wait_keyboard_allows_safe_operation_cancellation() -> None:
+    from src.bot.keyboards.admin_gifts import admin_gift_payment_wait_keyboard
+
+    markup = admin_gift_payment_wait_keyboard(123)
+    assert "admin:gifts:resume:123" in _callback_values(markup)
+    assert "admin:gifts:operation:cancel:123" in _callback_values(markup)
+
+
+def test_gift_controller_rejects_callbacks_from_old_messages() -> None:
+    data = {"controller_chat_id": 10, "controller_message_id": 20}
+    current = SimpleNamespace(chat=SimpleNamespace(id=10), message_id=20)
+    old = SimpleNamespace(chat=SimpleNamespace(id=10), message_id=19)
+
+    assert _is_current_gift_controller(data, current) is True
+    assert _is_current_gift_controller(data, old) is False
+    assert _is_current_gift_controller({}, current) is False
+
+
+@pytest.mark.asyncio
+async def test_old_gift_button_does_not_replace_an_active_wizard() -> None:
+    callback = SimpleNamespace(
+        message=SimpleNamespace(chat=SimpleNamespace(id=10), message_id=19)
+    )
+    state = SimpleNamespace(
+        get_data=AsyncMock(
+            return_value={"controller_chat_id": 10, "controller_message_id": 20}
+        )
+    )
+    with (
+        patch(
+            "src.bot.handlers.admin_gifts._start_recipient_search",
+            AsyncMock(),
+        ) as restart,
+        patch(
+            "src.bot.handlers.admin_gifts.safe_callback_answer",
+            AsyncMock(),
+        ) as answer,
+    ):
+        result = await _require_gift_wizard(
+            callback,
+            state,
+            SimpleNamespace(),
+        )
+
+    assert result is None
+    restart.assert_not_awaited()
+    answer.assert_awaited_once_with(
+        callback,
+        "Это кнопка из старой сессии отправки.",
+        show_alert=True,
+    )
 
 
 def test_external_recipient_id_validation_and_friendly_errors() -> None:
@@ -430,9 +487,8 @@ async def test_admin_gift_attempt_allows_recipient_outside_users_table() -> None
             )
             await session.commit()
 
-            attempt, created = await AdminGiftService(
-                session, bot=SimpleNamespace()
-            ).create_or_get_attempt(
+            service = AdminGiftService(session, bot=SimpleNamespace())
+            attempt, created = await service.create_or_get_attempt(
                 operation_key="external-recipient",
                 admin_id=42,
                 admin_username="admin",
@@ -450,6 +506,20 @@ async def test_admin_gift_attempt_allows_recipient_outside_users_table() -> None
             assert attempt.recipient_id == 987654321
             assert attempt.recipient_username_snapshot == "outside_user"
             assert await session.get(User, 987654321) is None
+            with pytest.raises(RuntimeError, match="reused with different data"):
+                await service.create_or_get_attempt(
+                    operation_key="external-recipient",
+                    admin_id=42,
+                    admin_username="admin",
+                    recipient_id=987654322,
+                    recipient_username="different_user",
+                    recipient_was_banned=False,
+                    gift_id="gift-id",
+                    gift_emoji="🎁",
+                    gift_star_count=50,
+                    gift_text="",
+                    bot_balance_before=100,
+                )
     finally:
         await engine.dispose()
 
@@ -947,3 +1017,434 @@ async def test_already_refunded_response_repairs_refund_audit_state() -> None:
 
     assert (refunded, failed) == (6, 0)
     assert service.marked == [(12, None)]
+
+
+@pytest.mark.asyncio
+async def test_successful_payment_must_match_pre_checkout_payer() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(
+            lambda sync_connection: Base.metadata.create_all(
+                sync_connection,
+                tables=[User.__table__, AdminGift.__table__, AdminGiftPayment.__table__],
+            )
+        )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    try:
+        async with session_factory() as session:
+            session.add(
+                User(
+                    id=42,
+                    username="admin",
+                    language_code="ru",
+                    referral_code="PAYER_MATCH_ADMIN",
+                    is_admin=True,
+                )
+            )
+            attempt = AdminGift(
+                operation_key="payer-match",
+                admin_id=42,
+                recipient_id=777,
+                gift_id="gift",
+                gift_star_count=10,
+                gift_text="",
+                status=AdminGiftStatus.AWAITING_PAYMENT.value,
+            )
+            session.add(attempt)
+            await session.flush()
+            payment = AdminGiftPayment(
+                gift_attempt_id=attempt.id,
+                invoice_payload="agift:payer-match",
+                requested_stars=10,
+                status=AdminGiftPaymentStatus.PRECHECKOUT.value,
+                pre_checkout_payer_id=100,
+                pre_checkout_query_id="checkout-100",
+                pre_checkout_at=datetime.utcnow(),
+            )
+            session.add(payment)
+            await session.commit()
+
+            service = AdminGiftService(session, bot=SimpleNamespace())
+            with pytest.raises(GiftPaymentRefundRequiredError):
+                await service.record_successful_payment(
+                    invoice_payload=payment.invoice_payload,
+                    payer_id=200,
+                    currency="XTR",
+                    total_amount=10,
+                    telegram_payment_charge_id="wrong-payer-charge",
+                    provider_payment_charge_id="provider",
+                )
+
+            await session.refresh(payment)
+            assert payment.status == AdminGiftPaymentStatus.PRECHECKOUT.value
+            assert payment.telegram_payment_charge_id is None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_refunded_successful_payment_update_is_idempotent() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(
+            lambda sync_connection: Base.metadata.create_all(
+                sync_connection,
+                tables=[User.__table__, AdminGift.__table__, AdminGiftPayment.__table__],
+            )
+        )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    try:
+        async with session_factory() as session:
+            session.add(
+                User(
+                    id=42,
+                    username="admin",
+                    language_code="ru",
+                    referral_code="REFUNDED_UPDATE_ADMIN",
+                    is_admin=True,
+                )
+            )
+            attempt = AdminGift(
+                operation_key="refunded-update",
+                admin_id=42,
+                recipient_id=777,
+                gift_id="gift",
+                gift_star_count=10,
+                gift_text="",
+                status=AdminGiftStatus.FAILED.value,
+            )
+            session.add(attempt)
+            await session.flush()
+            payment = AdminGiftPayment(
+                gift_attempt_id=attempt.id,
+                invoice_payload="agift:refunded-update",
+                requested_stars=10,
+                status=AdminGiftPaymentStatus.REFUNDED.value,
+                pre_checkout_payer_id=100,
+                payer_id=100,
+                telegram_payment_charge_id="same-charge",
+                provider_payment_charge_id="provider",
+                paid_stars=10,
+            )
+            session.add(payment)
+            await session.commit()
+
+            recorded, recorded_attempt, claimed = await AdminGiftService(
+                session, bot=SimpleNamespace()
+            ).record_successful_payment(
+                invoice_payload=payment.invoice_payload,
+                payer_id=100,
+                currency="XTR",
+                total_amount=10,
+                telegram_payment_charge_id="same-charge",
+                provider_payment_charge_id="provider",
+            )
+
+            assert claimed is False
+            assert recorded.status == AdminGiftPaymentStatus.REFUNDED.value
+            assert recorded_attempt.status == AdminGiftStatus.FAILED.value
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_unpaid_gift_can_be_cancelled_but_pre_checkout_cannot() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(
+            lambda sync_connection: Base.metadata.create_all(
+                sync_connection,
+                tables=[User.__table__, AdminGift.__table__, AdminGiftPayment.__table__],
+            )
+        )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    try:
+        async with session_factory() as session:
+            session.add(
+                User(
+                    id=42,
+                    username="admin",
+                    language_code="ru",
+                    referral_code="CANCEL_GIFT_ADMIN",
+                    is_admin=True,
+                )
+            )
+            cancellable = AdminGift(
+                operation_key="cancel-unpaid",
+                admin_id=42,
+                recipient_id=777,
+                gift_id="gift",
+                gift_star_count=10,
+                gift_text="",
+                status=AdminGiftStatus.AWAITING_PAYMENT.value,
+            )
+            in_checkout = AdminGift(
+                operation_key="cancel-checkout",
+                admin_id=42,
+                recipient_id=778,
+                gift_id="gift",
+                gift_star_count=10,
+                gift_text="",
+                status=AdminGiftStatus.AWAITING_PAYMENT.value,
+            )
+            session.add_all([cancellable, in_checkout])
+            await session.flush()
+            cancellable_payment = AdminGiftPayment(
+                gift_attempt_id=cancellable.id,
+                invoice_payload="agift:cancel-unpaid",
+                requested_stars=10,
+                status=AdminGiftPaymentStatus.INVOICE_SENT.value,
+                invoice_message_id=55,
+            )
+            checkout_payment = AdminGiftPayment(
+                gift_attempt_id=in_checkout.id,
+                invoice_payload="agift:cancel-checkout",
+                requested_stars=10,
+                status=AdminGiftPaymentStatus.PRECHECKOUT.value,
+                pre_checkout_payer_id=100,
+                pre_checkout_query_id="checkout",
+                pre_checkout_at=datetime.utcnow(),
+            )
+            session.add_all([cancellable_payment, checkout_payment])
+            await session.commit()
+
+            service = AdminGiftService(session, bot=SimpleNamespace())
+            cancelled = await service.cancel_unpaid_attempt(cancellable.id, 42)
+            blocked = await service.cancel_unpaid_attempt(in_checkout.id, 42)
+
+            await session.refresh(cancellable_payment)
+            await session.refresh(checkout_payment)
+            assert cancelled.cancelled is True
+            assert cancelled.attempt.status == AdminGiftStatus.CANCELLED.value
+            assert cancellable_payment.status == AdminGiftPaymentStatus.CANCELLED.value
+            assert blocked.cancelled is False
+            assert "Оплата уже началась" in blocked.reason
+            assert in_checkout.status == AdminGiftStatus.AWAITING_PAYMENT.value
+            assert checkout_payment.status == AdminGiftPaymentStatus.PRECHECKOUT.value
+
+            checkout_payment.pre_checkout_at = datetime.utcnow() - timedelta(
+                minutes=11
+            )
+            await session.commit()
+            stale_cancelled = await service.cancel_unpaid_attempt(in_checkout.id, 42)
+            assert stale_cancelled.cancelled is True
+            assert checkout_payment.status == AdminGiftPaymentStatus.CANCELLED.value
+            assert (
+                await service.claim_pre_checkout(
+                    checkout_payment.id,
+                    payer_id=100,
+                    query_id="checkout-after-cancel",
+                )
+                is False
+            )
+            with pytest.raises(GiftPaymentRefundRequiredError):
+                await service.record_successful_payment(
+                    invoice_payload=checkout_payment.invoice_payload,
+                    payer_id=100,
+                    currency="XTR",
+                    total_amount=10,
+                    telegram_payment_charge_id="late-cancelled-charge",
+                    provider_payment_charge_id="provider",
+                )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_only_stale_sending_attempt_is_sealed_unknown() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(
+            lambda sync_connection: Base.metadata.create_all(
+                sync_connection,
+                tables=[User.__table__, AdminGift.__table__],
+            )
+        )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    try:
+        async with session_factory() as session:
+            session.add(
+                User(
+                    id=42,
+                    username="admin",
+                    language_code="ru",
+                    referral_code="STALE_SEND_ADMIN",
+                    is_admin=True,
+                )
+            )
+            stale = AdminGift(
+                operation_key="stale-send",
+                admin_id=42,
+                recipient_id=777,
+                gift_id="gift",
+                gift_star_count=10,
+                gift_text="",
+                status=AdminGiftStatus.SENDING.value,
+                updated_at=datetime.utcnow() - timedelta(minutes=10),
+            )
+            fresh = AdminGift(
+                operation_key="fresh-send",
+                admin_id=42,
+                recipient_id=778,
+                gift_id="gift",
+                gift_star_count=10,
+                gift_text="",
+                status=AdminGiftStatus.SENDING.value,
+                updated_at=datetime.utcnow(),
+            )
+            session.add_all([stale, fresh])
+            await session.commit()
+
+            service = AdminGiftService(session, bot=SimpleNamespace())
+            stale_result, stale_changed = await service.mark_stale_sending_unknown(
+                stale.id,
+                stale_before=datetime.utcnow() - timedelta(minutes=5),
+            )
+            fresh_result, fresh_changed = await service.mark_stale_sending_unknown(
+                fresh.id,
+                stale_before=datetime.utcnow() - timedelta(minutes=5),
+            )
+
+            assert stale_changed is True
+            assert stale_result.status == AdminGiftStatus.UNKNOWN.value
+            assert fresh_changed is False
+            assert fresh_result.status == AdminGiftStatus.SENDING.value
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_selects_only_financially_actionable_gifts() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(
+            lambda sync_connection: Base.metadata.create_all(
+                sync_connection,
+                tables=[User.__table__, AdminGift.__table__, AdminGiftPayment.__table__],
+            )
+        )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    try:
+        async with session_factory() as session:
+            session.add(
+                User(
+                    id=42,
+                    username="admin",
+                    language_code="ru",
+                    referral_code="RECOVERY_ADMIN",
+                    is_admin=True,
+                )
+            )
+            paid_pending = AdminGift(
+                operation_key="recover-paid",
+                admin_id=42,
+                recipient_id=701,
+                gift_id="gift",
+                gift_star_count=10,
+                gift_text="",
+                status=AdminGiftStatus.PENDING.value,
+                controller_chat_id=42,
+                controller_message_id=1,
+            )
+            failed_refund = AdminGift(
+                operation_key="recover-refund",
+                admin_id=42,
+                recipient_id=702,
+                gift_id="gift",
+                gift_star_count=10,
+                gift_text="",
+                status=AdminGiftStatus.FAILED.value,
+                controller_chat_id=42,
+                controller_message_id=2,
+            )
+            stale_sending = AdminGift(
+                operation_key="recover-stale",
+                admin_id=42,
+                recipient_id=703,
+                gift_id="gift",
+                gift_star_count=10,
+                gift_text="",
+                status=AdminGiftStatus.SENDING.value,
+                updated_at=datetime.utcnow() - timedelta(minutes=10),
+                controller_chat_id=42,
+                controller_message_id=3,
+            )
+            unpaid_waiting = AdminGift(
+                operation_key="ignore-unpaid",
+                admin_id=42,
+                recipient_id=704,
+                gift_id="gift",
+                gift_star_count=10,
+                gift_text="",
+                status=AdminGiftStatus.AWAITING_PAYMENT.value,
+            )
+            session.add_all(
+                [paid_pending, failed_refund, stale_sending, unpaid_waiting]
+            )
+            await session.flush()
+            session.add_all(
+                [
+                    AdminGiftPayment(
+                        gift_attempt_id=paid_pending.id,
+                        invoice_payload="agift:recover-paid",
+                        requested_stars=10,
+                        status=AdminGiftPaymentStatus.PAID.value,
+                    ),
+                    AdminGiftPayment(
+                        gift_attempt_id=failed_refund.id,
+                        invoice_payload="agift:recover-refund",
+                        requested_stars=10,
+                        status=AdminGiftPaymentStatus.REFUND_FAILED.value,
+                    ),
+                    AdminGiftPayment(
+                        gift_attempt_id=unpaid_waiting.id,
+                        invoice_payload="agift:ignore-unpaid",
+                        requested_stars=10,
+                        status=AdminGiftPaymentStatus.INVOICE_SENT.value,
+                    ),
+                ]
+            )
+            await session.commit()
+            expected_ids = {paid_pending.id, failed_refund.id, stale_sending.id}
+
+        async def fake_resume(bot, attempt_id):
+            return (
+                SimpleNamespace(
+                    id=attempt_id,
+                    admin_id=42,
+                    status=AdminGiftStatus.UNKNOWN.value,
+                    controller_chat_id=42,
+                    controller_message_id=attempt_id,
+                ),
+                AdminGiftStatus.UNKNOWN.value,
+                "recovered",
+            )
+
+        edit_controller = AsyncMock()
+        with (
+            patch(
+                "src.bot.handlers.admin_gifts.async_session_factory",
+                session_factory,
+            ),
+            patch(
+                "src.bot.handlers.admin_gifts._resume_gift_attempt",
+                side_effect=fake_resume,
+            ) as resume,
+            patch(
+                "src.bot.handlers.admin_gifts._edit_attempt_controller",
+                edit_controller,
+            ),
+        ):
+            stats = await recover_admin_gift_operations(SimpleNamespace())
+
+        recovered_ids = {call.args[1] for call in resume.await_args_list}
+        assert recovered_ids == expected_ids
+        assert stats == {"found": 3, "recovered": 3, "failed": 0}
+        assert edit_controller.await_count == 3
+    finally:
+        await engine.dispose()

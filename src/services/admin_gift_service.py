@@ -27,6 +27,8 @@ from src.db.models import (
 logger = logging.getLogger(__name__)
 
 PRE_CHECKOUT_RESERVATION_MINUTES = 10
+TELEGRAM_GIFT_TEXT_LIMIT = 128
+TELEGRAM_USER_ID_MAX = 0xFFFFFFFFFF
 
 
 @dataclass(slots=True)
@@ -37,7 +39,19 @@ class GiftSendOutcome:
     error: str | None = None
 
 
-class GiftInvoiceAlreadyPaidError(ValueError):
+@dataclass(slots=True)
+class GiftCancellationOutcome:
+    attempt: AdminGift
+    payment: AdminGiftPayment | None
+    cancelled: bool
+    reason: str | None = None
+
+
+class GiftPaymentRefundRequiredError(ValueError):
+    """A completed Telegram charge cannot be applied to this Gift invoice."""
+
+
+class GiftInvoiceAlreadyPaidError(GiftPaymentRefundRequiredError):
     """A second Telegram charge arrived for an invoice that was already paid."""
 
 
@@ -69,6 +83,19 @@ class AdminGiftService:
         controller_message_id: int | None = None,
     ) -> tuple[AdminGift, bool]:
         """Create an audit row, returning the existing row on a duplicate callback."""
+        if admin_id <= 0:
+            raise ValueError("admin_id must be positive")
+        if recipient_id <= 0 or recipient_id > TELEGRAM_USER_ID_MAX:
+            raise ValueError("recipient_id is outside the Telegram user ID range")
+        if not gift_id:
+            raise ValueError("gift_id is required")
+        if gift_star_count <= 0:
+            raise ValueError("gift_star_count must be positive")
+        if gift_source not in {"live", "archive"}:
+            raise ValueError("gift_source must be live or archive")
+        if len(gift_text.encode("utf-16-le")) // 2 > TELEGRAM_GIFT_TEXT_LIMIT:
+            raise ValueError("gift_text exceeds the Telegram limit")
+
         attempt = AdminGift(
             operation_key=operation_key,
             admin_id=admin_id,
@@ -102,6 +129,26 @@ class AdminGiftService:
         existing = result.scalar_one_or_none()
         if existing is None:
             raise RuntimeError("Gift operation key conflict could not be resolved")
+        expected_snapshot = (
+            admin_id,
+            recipient_id,
+            gift_id,
+            gift_star_count,
+            gift_text,
+            gift_source,
+            archived_gift_id,
+        )
+        existing_snapshot = (
+            existing.admin_id,
+            existing.recipient_id,
+            existing.gift_id,
+            existing.gift_star_count,
+            existing.gift_text,
+            existing.gift_source,
+            existing.archived_gift_id,
+        )
+        if existing_snapshot != expected_snapshot:
+            raise RuntimeError("Gift operation key was reused with different data")
         return existing, False
 
     async def get_attempt(self, attempt_id: int) -> AdminGift | None:
@@ -335,6 +382,12 @@ class AdminGiftService:
             update(AdminGiftPayment)
             .where(
                 AdminGiftPayment.id == payment_id,
+                AdminGiftPayment.gift_attempt_id.in_(
+                    select(AdminGift.id).where(
+                        AdminGift.status
+                        == AdminGiftStatus.AWAITING_PAYMENT.value
+                    )
+                ),
                 or_(
                     AdminGiftPayment.status.in_(
                         [
@@ -379,19 +432,38 @@ class AdminGiftService:
         """Idempotently record XTR payment and return the Gift to pending delivery."""
         payment, attempt = await self.get_payment_context(invoice_payload)
         if payment is None or attempt is None:
-            raise ValueError("Unknown admin Gift invoice")
+            raise GiftPaymentRefundRequiredError("Unknown admin Gift invoice")
         if currency != "XTR" or total_amount != payment.requested_stars:
-            raise ValueError("Invoice currency or amount does not match")
-        if payment.status == AdminGiftPaymentStatus.PAID.value:
+            raise GiftPaymentRefundRequiredError(
+                "Invoice currency or amount does not match"
+            )
+        recorded_statuses = {
+            AdminGiftPaymentStatus.PAID.value,
+            AdminGiftPaymentStatus.REFUNDED.value,
+            AdminGiftPaymentStatus.REFUND_FAILED.value,
+        }
+        if payment.status in recorded_statuses:
             if payment.telegram_payment_charge_id != telegram_payment_charge_id:
                 raise GiftInvoiceAlreadyPaidError(
                     "Invoice already has a different payment charge"
                 )
             if payment.payer_id != payer_id:
-                raise ValueError("Invoice already belongs to a different payer")
+                raise GiftInvoiceAlreadyPaidError(
+                    "Invoice already belongs to a different payer"
+                )
             return payment, attempt, False
+        if attempt.status != AdminGiftStatus.AWAITING_PAYMENT.value:
+            raise GiftPaymentRefundRequiredError("Gift invoice is no longer active")
+        if payment.status == AdminGiftPaymentStatus.CANCELLED.value:
+            raise GiftPaymentRefundRequiredError(
+                "A cancelled Gift invoice produced a late successful payment"
+            )
         if payment.status != AdminGiftPaymentStatus.PRECHECKOUT.value:
-            raise ValueError("Invoice is no longer payable")
+            raise GiftPaymentRefundRequiredError("Invoice is no longer payable")
+        if payment.pre_checkout_payer_id != payer_id:
+            raise GiftPaymentRefundRequiredError(
+                "Successful payment payer does not match the pre-checkout reservation"
+            )
 
         now = datetime.utcnow()
         result = await self._session.execute(
@@ -431,18 +503,151 @@ class AdminGiftService:
         if payment is None or attempt is None:
             raise RuntimeError("Paid Gift invoice disappeared")
         if not claimed:
-            if (
-                payment.status == AdminGiftPaymentStatus.PAID.value
-                and payment.telegram_payment_charge_id == telegram_payment_charge_id
-                and payment.payer_id == payer_id
-            ):
-                return payment, attempt, False
-            if payment.status == AdminGiftPaymentStatus.PAID.value:
+            if payment.status in recorded_statuses:
+                if (
+                    payment.telegram_payment_charge_id == telegram_payment_charge_id
+                    and payment.payer_id == payer_id
+                ):
+                    return payment, attempt, False
                 raise GiftInvoiceAlreadyPaidError(
                     "A concurrent charge already paid this invoice"
                 )
+            if payment.status == AdminGiftPaymentStatus.CANCELLED.value:
+                raise GiftPaymentRefundRequiredError(
+                    "Gift invoice was cancelled while its payment arrived"
+                )
             raise ValueError("Invoice changed state while recording its payment")
         return payment, attempt, claimed
+
+    async def cancel_unpaid_attempt(
+        self,
+        attempt_id: int,
+        admin_id: int,
+    ) -> GiftCancellationOutcome:
+        """Cancel an unpaid operation while serializing against pre-checkout."""
+        attempt_result = await self._session.execute(
+            select(AdminGift)
+            .where(
+                AdminGift.id == attempt_id,
+                AdminGift.admin_id == admin_id,
+            )
+            .with_for_update()
+        )
+        attempt = attempt_result.scalar_one_or_none()
+        if attempt is None:
+            raise LookupError("Gift attempt not found")
+        if attempt.status == AdminGiftStatus.CANCELLED.value:
+            return GiftCancellationOutcome(attempt, None, True)
+        if attempt.status not in {
+            AdminGiftStatus.PENDING.value,
+            AdminGiftStatus.AWAITING_PAYMENT.value,
+        }:
+            return GiftCancellationOutcome(
+                attempt,
+                None,
+                False,
+                "Операция уже оплачена или завершена.",
+            )
+
+        payment_result = await self._session.execute(
+            select(AdminGiftPayment)
+            .where(
+                AdminGiftPayment.gift_attempt_id == attempt_id,
+                AdminGiftPayment.status.in_(
+                    [
+                        AdminGiftPaymentStatus.INVOICE_PENDING.value,
+                        AdminGiftPaymentStatus.INVOICE_SENT.value,
+                        AdminGiftPaymentStatus.PRECHECKOUT.value,
+                        AdminGiftPaymentStatus.PAID.value,
+                        AdminGiftPaymentStatus.REFUND_FAILED.value,
+                    ]
+                ),
+            )
+            .order_by(AdminGiftPayment.id.desc())
+            .with_for_update()
+        )
+        payments = list(payment_result.scalars().all())
+        now = datetime.utcnow()
+        stale_pre_checkout_before = now - timedelta(
+            minutes=PRE_CHECKOUT_RESERVATION_MINUTES
+        )
+        if any(
+            payment.status
+            in {
+                AdminGiftPaymentStatus.PAID.value,
+                AdminGiftPaymentStatus.REFUND_FAILED.value,
+            }
+            or (
+                payment.status == AdminGiftPaymentStatus.PRECHECKOUT.value
+                and (
+                    payment.pre_checkout_at is None
+                    or payment.pre_checkout_at >= stale_pre_checkout_before
+                )
+            )
+            for payment in payments
+        ):
+            await self._session.commit()
+            return GiftCancellationOutcome(
+                attempt,
+                payments[0] if payments else None,
+                False,
+                "Оплата уже началась. Дождитесь результата и проверьте операцию.",
+            )
+
+        cancellable = [
+            payment
+            for payment in payments
+            if payment.status
+            in {
+                AdminGiftPaymentStatus.INVOICE_PENDING.value,
+                AdminGiftPaymentStatus.INVOICE_SENT.value,
+                AdminGiftPaymentStatus.PRECHECKOUT.value,
+            }
+        ]
+        for payment in cancellable:
+            payment.status = AdminGiftPaymentStatus.CANCELLED.value
+            payment.error_message = "Cancelled by administrator"
+            payment.updated_at = now
+        attempt.status = AdminGiftStatus.CANCELLED.value
+        attempt.error_type = None
+        attempt.error_message = None
+        attempt.updated_at = now
+        await self._session.commit()
+        return GiftCancellationOutcome(
+            attempt,
+            cancellable[0] if cancellable else None,
+            True,
+        )
+
+    async def mark_stale_sending_unknown(
+        self,
+        attempt_id: int,
+        *,
+        stale_before: datetime,
+    ) -> tuple[AdminGift, bool]:
+        """Seal an interrupted send without risking a duplicate Telegram Gift."""
+        error = RuntimeError("Gift delivery was interrupted before its result was saved")
+        result = await self._session.execute(
+            update(AdminGift)
+            .where(
+                AdminGift.id == attempt_id,
+                AdminGift.status == AdminGiftStatus.SENDING.value,
+                AdminGift.updated_at < stale_before,
+            )
+            .values(
+                status=AdminGiftStatus.UNKNOWN.value,
+                error_type=type(error).__name__,
+                error_message=str(error),
+                updated_at=datetime.utcnow(),
+            )
+            .returning(AdminGift.id)
+        )
+        changed = result.scalar_one_or_none() is not None
+        await self._session.commit()
+        attempt = await self.get_attempt(attempt_id)
+        if attempt is None:
+            raise LookupError("Gift attempt not found")
+        return attempt, changed
 
     async def mark_payment_refunded(
         self, payment_id: int, error: BaseException | None = None

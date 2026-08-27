@@ -79,6 +79,7 @@ class AdminGiftStatus(enum.Enum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     UNKNOWN = "unknown"
+    CANCELLED = "cancelled"
 
 
 class AdminGiftPaymentStatus(enum.Enum):
@@ -89,6 +90,7 @@ class AdminGiftPaymentStatus(enum.Enum):
     FAILED = "failed"
     REFUNDED = "refunded"
     REFUND_FAILED = "refund_failed"
+    CANCELLED = "cancelled"
 
 
 # ============ MODELS ============
