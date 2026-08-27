@@ -13,15 +13,19 @@ from src.bot.handlers.admin_gifts import (
     _issue_payment_invoice,
     _preflight_selected_gift,
     _refund_paid_topups,
+    _resolve_recipient_input,
     build_gift_text,
+    describe_gift_delivery_error,
     max_comment_length,
     telegram_text_length,
+    validate_telegram_user_id,
     validate_gift_pre_checkout,
 )
 from src.bot.keyboards.admin import AdminCallback, get_admin_menu_keyboard
 from src.bot.keyboards.admin_gifts import (
     _archived_gift_button_title,
     admin_gift_catalog_keyboard,
+    admin_gift_recipient_picker_keyboard,
     archived_gift_choose_keyboard,
 )
 from src.db.models import (
@@ -58,6 +62,46 @@ def test_admin_menu_contains_native_gift_action() -> None:
     markup = get_admin_menu_keyboard()
     assert AdminCallback.GIFTS in _callback_values(markup)
     assert "🎁 Подарить подарок" in _button_texts(markup)
+
+
+def test_recipient_picker_requests_one_non_bot_with_identity() -> None:
+    markup = admin_gift_recipient_picker_keyboard(927)
+    button = markup.keyboard[0][0]
+
+    assert button.request_users is not None
+    assert button.request_users.request_id == 927
+    assert button.request_users.user_is_bot is False
+    assert button.request_users.max_quantity == 1
+    assert button.request_users.request_name is True
+    assert button.request_users.request_username is True
+    assert markup.one_time_keyboard is True
+
+
+def test_external_recipient_id_validation_and_friendly_errors() -> None:
+    assert validate_telegram_user_id(" 123456789 ") == 123456789
+    assert validate_telegram_user_id(0xFFFFFFFFFF) == 0xFFFFFFFFFF
+    for invalid in ("", "@user", "-1", "1.5", "１２３", 0, 0x10000000000):
+        with pytest.raises(ValueError):
+            validate_telegram_user_id(invalid)
+
+    assert "не дал боту доступ" in describe_gift_delivery_error("USER_ID_INVALID")
+    assert "не может принимать" in describe_gift_delivery_error("USER_GIFT_UNAVAILABLE")
+    assert "закончился" in describe_gift_delivery_error("STARGIFT_USAGE_LIMITED")
+    assert "заблокировал" in describe_gift_delivery_error("USER_IS_BLOCKED")
+
+
+@pytest.mark.asyncio
+async def test_numeric_recipient_input_accepts_an_external_user_id() -> None:
+    with patch(
+        "src.bot.handlers.admin_gifts._recipient_by_id",
+        AsyncMock(return_value=SimpleNamespace(user_id=777, is_registered=False)),
+    ) as lookup:
+        target, error = await _resolve_recipient_input(" 777 ")
+
+    assert error is None
+    assert target.user_id == 777
+    assert target.is_registered is False
+    lookup.assert_awaited_once_with(777)
 
 
 @pytest.mark.asyncio
@@ -357,6 +401,55 @@ async def test_admin_gift_attempt_keeps_archived_source_snapshot() -> None:
             assert attempt.gift_source == "archive"
             assert attempt.gift_title_snapshot == archived.title
             assert attempt.archived_gift_id == archived.id
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_admin_gift_attempt_allows_recipient_outside_users_table() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(
+            lambda sync_connection: Base.metadata.create_all(
+                sync_connection,
+                tables=[User.__table__, AdminGift.__table__],
+            )
+        )
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    try:
+        async with session_factory() as session:
+            session.add(
+                User(
+                    id=42,
+                    username="admin",
+                    language_code="ru",
+                    referral_code="EXTERNAL_GIFT_ADMIN",
+                    is_admin=True,
+                )
+            )
+            await session.commit()
+
+            attempt, created = await AdminGiftService(
+                session, bot=SimpleNamespace()
+            ).create_or_get_attempt(
+                operation_key="external-recipient",
+                admin_id=42,
+                admin_username="admin",
+                recipient_id=987654321,
+                recipient_username="outside_user",
+                recipient_was_banned=False,
+                gift_id="gift-id",
+                gift_emoji="🎁",
+                gift_star_count=50,
+                gift_text="",
+                bot_balance_before=100,
+            )
+
+            assert created is True
+            assert attempt.recipient_id == 987654321
+            assert attempt.recipient_username_snapshot == "outside_user"
+            assert await session.get(User, 987654321) is None
     finally:
         await engine.dispose()
 

@@ -5,13 +5,22 @@ import asyncio
 import html
 import logging
 import secrets
+from dataclasses import dataclass
 from datetime import datetime
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, LabeledPrice, Message, PreCheckoutQuery
+from aiogram.types import (
+    CallbackQuery,
+    LabeledPrice,
+    Message,
+    MessageOriginHiddenUser,
+    MessageOriginUser,
+    PreCheckoutQuery,
+    ReplyKeyboardRemove,
+)
 from sqlalchemy import func, select, update
 
 from src.bot.callback_utils import safe_callback_answer
@@ -23,6 +32,7 @@ from src.bot.keyboards.admin_gifts import (
     admin_gift_comment_keyboard,
     admin_gift_confirm_keyboard,
     admin_gift_payment_wait_keyboard,
+    admin_gift_recipient_picker_keyboard,
     admin_gift_result_keyboard,
     admin_gift_search_keyboard,
     admin_gift_selected_keyboard,
@@ -50,6 +60,16 @@ _confirmation_locks: dict[int, asyncio.Lock] = {}
 _archive_catalog_lock = asyncio.Lock()
 
 TELEGRAM_GIFT_TEXT_LIMIT = 128
+TELEGRAM_USER_ID_MAX = 0xFFFFFFFFFF
+
+
+@dataclass(frozen=True, slots=True)
+class GiftRecipientTarget:
+    user_id: int
+    username: str | None = None
+    display_name: str | None = None
+    is_banned: bool = False
+    is_registered: bool = False
 
 
 class AdminGiftStates(StatesGroup):
@@ -128,7 +148,12 @@ def _available_gift_dicts(gifts) -> list[dict]:
 
 def _recipient_name(data: dict) -> str:
     username = data.get("recipient_username")
-    return f"@{username}" if username else f"ID: {data.get('recipient_id')}"
+    if username:
+        return f"@{username}"
+    display_name = data.get("recipient_display_name")
+    if display_name:
+        return f"{display_name} (ID: {data.get('recipient_id')})"
+    return f"ID: {data.get('recipient_id')}"
 
 
 def _banned_warning(data: dict) -> str:
@@ -320,6 +345,139 @@ async def _find_registered_user(value: str) -> User | None:
     return None
 
 
+def _registered_recipient(user: User) -> GiftRecipientTarget:
+    return GiftRecipientTarget(
+        user_id=user.id,
+        username=user.username,
+        is_banned=user.is_banned,
+        is_registered=True,
+    )
+
+
+def validate_telegram_user_id(value: str | int) -> int:
+    raw = str(value).strip()
+    if not raw.isascii() or not raw.isdigit():
+        raise ValueError("Telegram ID должен состоять только из цифр.")
+    user_id = int(raw)
+    if user_id <= 0 or user_id > TELEGRAM_USER_ID_MAX:
+        raise ValueError("Telegram ID находится вне допустимого диапазона.")
+    return user_id
+
+
+def describe_gift_delivery_error(error: str | None) -> str:
+    message = (error or "").lower()
+    if any(
+        code in message
+        for code in ("user_id_invalid", "peer_id_invalid", "user not found")
+    ):
+        return (
+            "Telegram не дал боту доступ к получателю. Перешлите сюда сообщение "
+            "этого пользователя и попробуйте снова."
+        )
+    if any(code in message for code in ("input_user_deactivated", "user_deactivated")):
+        return "Аккаунт получателя удалён или деактивирован."
+    if "user_is_blocked" in message or "bot was blocked" in message:
+        return "Получатель заблокировал бота, поэтому Telegram отклонил подарок."
+    if any(code in message for code in ("user_gift_unavailable", "gift_unavailable")):
+        return "Получатель сейчас не может принимать Telegram Gifts."
+    if any(code in message for code in ("stargift_usage_limited", "gift is unavailable")):
+        return "Этот подарок закончился или больше недоступен."
+    if "balance_too_low" in message or "not enough stars" in message:
+        return "На балансе бота недостаточно Telegram Stars."
+    return "Telegram отклонил отправку. Подробности сохранены в журнале операции."
+
+
+async def _recipient_by_id(
+    user_id: int,
+    *,
+    username: str | None = None,
+    display_name: str | None = None,
+) -> GiftRecipientTarget:
+    async with async_session_factory() as session:
+        result = await session.execute(select(User).where(User.id == user_id))
+        registered = result.scalar_one_or_none()
+    if registered is not None:
+        return _registered_recipient(registered)
+    return GiftRecipientTarget(
+        user_id=user_id,
+        username=username,
+        display_name=display_name,
+    )
+
+
+async def _resolve_recipient_input(
+    value: str,
+) -> tuple[GiftRecipientTarget | None, str | None]:
+    query = value.strip()
+    if not query:
+        return None, "Отправьте Telegram ID или выберите пользователя кнопкой."
+    if query.isascii() and query.isdigit():
+        try:
+            user_id = validate_telegram_user_id(query)
+        except ValueError as exc:
+            return None, str(exc)
+        return await _recipient_by_id(user_id), None
+
+    user = await _find_registered_user(query)
+    if user is not None:
+        return _registered_recipient(user), None
+    return (
+        None,
+        "Username или реферальный код не найден в базе бота. Для "
+        "незарегистрированного пользователя нажмите «Выбрать пользователя».",
+    )
+
+
+async def _remove_recipient_picker(bot: Bot, state: FSMContext) -> None:
+    data = await state.get_data()
+    chat_id = data.get("controller_chat_id")
+    picker_message_id = data.get("recipient_picker_message_id")
+    if picker_message_id and chat_id:
+        try:
+            await bot.delete_message(chat_id, picker_message_id)
+        except Exception as exc:
+            logger.debug("Could not delete Gift recipient picker: %s", exc)
+    if data.get("recipient_picker_active") and chat_id:
+        try:
+            cleanup = await bot.send_message(
+                chat_id,
+                "Клавиатура выбора получателя закрыта.",
+                reply_markup=ReplyKeyboardRemove(),
+                disable_notification=True,
+            )
+            await bot.delete_message(chat_id, cleanup.message_id)
+        except Exception as exc:
+            logger.debug("Could not remove Gift recipient keyboard: %s", exc)
+    if picker_message_id or data.get("recipient_picker_active"):
+        await state.update_data(
+            recipient_picker_message_id=None,
+            recipient_picker_active=False,
+        )
+
+
+async def _accept_recipient(
+    bot: Bot,
+    state: FSMContext,
+    target: GiftRecipientTarget,
+) -> None:
+    await _remove_recipient_picker(bot, state)
+    await state.update_data(
+        recipient_id=target.user_id,
+        recipient_username=target.username,
+        recipient_display_name=target.display_name,
+        recipient_is_banned=target.is_banned,
+        recipient_is_registered=target.is_registered,
+    )
+    await _edit_controller(
+        bot,
+        state,
+        "⏳ <b>Загружаю доступные подарки Telegram…</b>",
+        None,
+    )
+    error = await _load_catalog(bot, state)
+    await _show_catalog(bot, state, error=error)
+
+
 async def _start_recipient_search(
     bot: Bot,
     state: FSMContext,
@@ -329,11 +487,14 @@ async def _start_recipient_search(
     error: str | None = None,
 ) -> None:
     await _delete_preview(bot, state)
+    await _remove_recipient_picker(bot, state)
     await state.clear()
     await state.set_state(AdminGiftStates.waiting_recipient)
+    request_id = secrets.randbelow(2**31)
     await state.update_data(
         controller_chat_id=chat_id,
         controller_message_id=message_id,
+        recipient_request_id=request_id,
     )
     error_text = f"❌ <b>{html.escape(error)}</b>\n\n" if error else ""
     await _edit_controller(
@@ -341,13 +502,26 @@ async def _start_recipient_search(
         state,
         error_text
         + "🎁 <b>Подарить подарок</b>\n\n"
-        "Найдите зарегистрированного пользователя. Отправьте:\n"
-        "• Telegram ID;\n"
-        "• <code>@username</code> или username без @;\n"
-        "• реферальный код.\n\n"
-        "<i>Отправить подарок незарегистрированному пользователю нельзя.</i>",
+        "Перешлите сюда сообщение получателя или нажмите «Выбрать пользователя». "
+        "Оба способа позволяют выбрать человека, которого нет в базе бота.\n\n"
+        "Также можно отправить числовой Telegram ID. Username и реферальный код "
+        "работают для пользователей из базы бота. Если Telegram не даст доступ "
+        "по ID, используйте пересланное сообщение.",
         admin_gift_search_keyboard(),
     )
+    try:
+        picker = await bot.send_message(
+            chat_id,
+            "Выберите получателя подарка:",
+            reply_markup=admin_gift_recipient_picker_keyboard(request_id),
+            request_timeout=12,
+        )
+        await state.update_data(
+            recipient_picker_message_id=picker.message_id,
+            recipient_picker_active=True,
+        )
+    except Exception as exc:
+        logger.warning("Could not show native Gift recipient picker: %s", exc)
 
 
 async def _load_catalog(bot: Bot, state: FSMContext) -> str | None:
@@ -1004,6 +1178,7 @@ async def _resume_gift_attempt(bot: Bot, attempt_id: int) -> tuple[AdminGift, st
             refunded, refund_failed = await _refund_paid_topups(bot, service, attempt)
             text = (
                 "❌ <b>Telegram отклонил отправку подарка</b>\n\n"
+                f"{html.escape(describe_gift_delivery_error(outcome.error))}\n"
                 f"Возвращено плательщикам: <b>{refunded} Stars</b>."
             )
             if refund_failed:
@@ -1130,37 +1305,139 @@ async def callback_admin_gift_archive_legacy_action(
     )
 
 
+@router.message(AdminGiftStates.waiting_recipient, F.forward_origin)
+async def message_admin_gift_forwarded_recipient(
+    message: Message, state: FSMContext, bot: Bot
+) -> None:
+    if not await check_admin_message(message):
+        return
+    data = await state.get_data()
+    origin = message.forward_origin
+    await _delete_admin_input(message)
+    if isinstance(origin, MessageOriginHiddenUser):
+        await _start_recipient_search(
+            bot,
+            state,
+            chat_id=data["controller_chat_id"],
+            message_id=data["controller_message_id"],
+            error=(
+                "Автор пересланного сообщения скрыт настройками приватности. "
+                "Используйте кнопку выбора пользователя или Telegram ID."
+            ),
+        )
+        return
+    if not isinstance(origin, MessageOriginUser):
+        await _start_recipient_search(
+            bot,
+            state,
+            chat_id=data["controller_chat_id"],
+            message_id=data["controller_message_id"],
+            error="Нужно переслать личное сообщение пользователя, а не канала или чата.",
+        )
+        return
+    sender = origin.sender_user
+    if sender.is_bot:
+        await _start_recipient_search(
+            bot,
+            state,
+            chat_id=data["controller_chat_id"],
+            message_id=data["controller_message_id"],
+            error="Telegram Gifts можно отправлять только обычным пользователям.",
+        )
+        return
+    try:
+        user_id = validate_telegram_user_id(sender.id)
+    except ValueError as exc:
+        await _start_recipient_search(
+            bot,
+            state,
+            chat_id=data["controller_chat_id"],
+            message_id=data["controller_message_id"],
+            error=str(exc),
+        )
+        return
+    display_name = " ".join(
+        part for part in (sender.first_name, sender.last_name) if part
+    ) or None
+    target = await _recipient_by_id(
+        user_id,
+        username=sender.username,
+        display_name=display_name,
+    )
+    await _accept_recipient(bot, state, target)
+
+
+@router.message(AdminGiftStates.waiting_recipient, F.users_shared)
+async def message_admin_gift_shared_recipient(
+    message: Message, state: FSMContext, bot: Bot
+) -> None:
+    if not await check_admin_message(message):
+        return
+    if message.users_shared is None:
+        return
+    data = await state.get_data()
+    await _delete_admin_input(message)
+    shared = message.users_shared
+    if shared.request_id != data.get("recipient_request_id"):
+        await _start_recipient_search(
+            bot,
+            state,
+            chat_id=data["controller_chat_id"],
+            message_id=data["controller_message_id"],
+            error="Эта кнопка выбора получателя устарела. Выберите пользователя заново.",
+        )
+        return
+    if len(shared.users) != 1:
+        await _start_recipient_search(
+            bot,
+            state,
+            chat_id=data["controller_chat_id"],
+            message_id=data["controller_message_id"],
+            error="Нужно выбрать ровно одного пользователя.",
+        )
+        return
+
+    selected = shared.users[0]
+    try:
+        user_id = validate_telegram_user_id(selected.user_id)
+    except ValueError as exc:
+        await _start_recipient_search(
+            bot,
+            state,
+            chat_id=data["controller_chat_id"],
+            message_id=data["controller_message_id"],
+            error=str(exc),
+        )
+        return
+    display_name = " ".join(
+        part for part in (selected.first_name, selected.last_name) if part
+    ) or None
+    target = await _recipient_by_id(
+        user_id,
+        username=selected.username,
+        display_name=display_name,
+    )
+    await _accept_recipient(bot, state, target)
+
+
 @router.message(AdminGiftStates.waiting_recipient)
 async def message_admin_gift_recipient(message: Message, state: FSMContext, bot: Bot) -> None:
     if not await check_admin_message(message):
         return
     value = message.text or ""
     await _delete_admin_input(message)
-    user = await _find_registered_user(value)
-    if user is None:
+    target, error = await _resolve_recipient_input(value)
+    if target is None:
         data = await state.get_data()
         await _start_recipient_search(
             bot,
             state,
             chat_id=data["controller_chat_id"],
             message_id=data["controller_message_id"],
-            error="Пользователь не найден среди зарегистрированных в боте.",
+            error=error or "Не удалось определить получателя.",
         )
         return
-
-    await state.update_data(
-        recipient_id=user.id,
-        recipient_username=user.username,
-        recipient_is_banned=user.is_banned,
-    )
-    await _edit_controller(
-        bot,
-        state,
-        "⏳ <b>Загружаю доступные подарки Telegram…</b>",
-        None,
-    )
-    error = await _load_catalog(bot, state)
-    await _show_catalog(bot, state, error=error)
+    await _accept_recipient(bot, state, target)
 
 
 @router.callback_query(F.data == "admin:gifts:recipient")
@@ -1423,24 +1700,20 @@ async def _process_admin_gift_confirm(
     async with async_session_factory() as session:
         result = await session.execute(select(User).where(User.id == recipient_id))
         recipient = result.scalar_one_or_none()
-        if recipient is None:
-            await _start_recipient_search(
-                bot,
-                state,
-                chat_id=callback.message.chat.id,
-                message_id=callback.message.message_id,
-                error="Пользователь больше не зарегистрирован в боте.",
-            )
-            return
+        recipient_username = data.get("recipient_username")
+        recipient_was_banned = bool(data.get("recipient_is_banned"))
+        if recipient is not None:
+            recipient_username = recipient.username
+            recipient_was_banned = recipient.is_banned
 
         service = AdminGiftService(session, bot)
         attempt, created_attempt = await service.create_or_get_attempt(
             operation_key=operation_key,
             admin_id=callback.from_user.id,
             admin_username=callback.from_user.username,
-            recipient_id=recipient.id,
-            recipient_username=recipient.username,
-            recipient_was_banned=recipient.is_banned,
+            recipient_id=recipient_id,
+            recipient_username=recipient_username,
+            recipient_was_banned=recipient_was_banned,
             gift_id=gift_id,
             gift_emoji=verified.get("emoji"),
             gift_star_count=gift_star_count,
@@ -1562,7 +1835,7 @@ async def _process_admin_gift_confirm(
                     action="Неоднозначный результат Telegram Gift",
                     details=(
                         f"Операция: #{attempt.id}\n"
-                        f"Получатель: {recipient.id}\n"
+                        f"Получатель: {recipient_id}\n"
                         f"Подарок: {html.escape(gift_id)}\n"
                         f"Ошибка аудита: {html.escape(str(exc)[:500])}"
                     ),
@@ -1602,9 +1875,10 @@ async def _process_admin_gift_confirm(
     elif outcome.status == AdminGiftStatus.FAILED.value:
         result_text = (
             "❌ <b>Telegram отклонил отправку подарка</b>\n\n"
-            "Подарок не был отправлен. Автоматического повтора не будет.\n\n"
+            f"{html.escape(describe_gift_delivery_error(outcome.error))}\n\n"
+            "Подарок не был отправлен. Автоматического повтора не будет.\n"
             f"🧾 Операция: <code>#{outcome.attempt.id}</code>\n"
-            f"Ошибка: <code>{html.escape((outcome.error or 'неизвестная ошибка')[:500])}</code>"
+            f"Код Telegram: <code>{html.escape((outcome.error or 'неизвестная ошибка')[:500])}</code>"
         )
         if refunded:
             result_text += f"\n↩️ Возвращено плательщикам: <b>{refunded} Stars</b>."
@@ -1874,6 +2148,7 @@ async def callback_admin_gift_cancel(
     if not await check_admin(callback):
         return
     await _delete_preview(bot, state)
+    await _remove_recipient_picker(bot, state)
     await state.clear()
     await callback.message.edit_text(
         "🔐 <b>Админ-панель</b>\n\nВыберите раздел:",

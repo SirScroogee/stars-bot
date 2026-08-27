@@ -172,7 +172,7 @@ class AdminGift(Base):
 
     admin_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"))
     admin_username_snapshot: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    recipient_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"))
+    recipient_id: Mapped[int] = mapped_column(BigInteger)
     recipient_username_snapshot: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     recipient_was_banned: Mapped[bool] = mapped_column(Boolean, default=False)
 

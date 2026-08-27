@@ -1,7 +1,13 @@
 """Inline keyboards for the administrator Telegram Gifts wizard."""
 from __future__ import annotations
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    KeyboardButtonRequestUsers,
+    ReplyKeyboardMarkup,
+)
 
 from src.bot.keyboards.admin import AdminCallback
 
@@ -26,6 +32,29 @@ def admin_gift_search_keyboard() -> InlineKeyboardMarkup:
                 )
             ]
         ]
+    )
+
+
+def admin_gift_recipient_picker_keyboard(request_id: int) -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(
+                    text="👤 Выбрать пользователя",
+                    request_users=KeyboardButtonRequestUsers(
+                        request_id=request_id,
+                        user_is_bot=False,
+                        max_quantity=1,
+                        request_name=True,
+                        request_username=True,
+                    ),
+                )
+            ]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+        selective=True,
+        input_field_placeholder="Выберите пользователя или отправьте ID",
     )
 
 
